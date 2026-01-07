@@ -1,0 +1,33 @@
+{
+  "name": "logic-slack-bot",
+  "version": "1.0.0",
+  "description": "A Slack bot for managing lateral-thinking puzzles",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "watch": "tsc --watch"
+  },
+  "keywords": [
+    "slack",
+    "bot",
+    "puzzle",
+    "lateral-thinking"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@slack/bolt": "^3.17.1",
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.24",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.4.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
+

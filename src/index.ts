@@ -1,0 +1,1065 @@
+import { App, LogLevel } from '@slack/bolt';
+import * as dotenv from 'dotenv';
+
+// Load environment variables
+dotenv.config();
+
+// Validate required environment variables
+const requiredEnvVars = [
+  'SLACK_BOT_TOKEN',
+  'SLACK_SIGNING_SECRET',
+  'LOGIC_CHANNEL_ID_MAIN',
+  'LOGIC_CHANNEL_ID_TEST',
+];
+
+for (const envVar of requiredEnvVars) {
+  if (!process.env[envVar]) {
+    throw new Error(`Missing required environment variable: ${envVar}`);
+  }
+}
+
+// Configuration
+const ALLOWED_CHANNEL_IDS = [
+  process.env.LOGIC_CHANNEL_ID_MAIN!,
+  process.env.LOGIC_CHANNEL_ID_TEST!,
+];
+
+const ADMIN_USER_IDS = process.env.LOGIC_ADMIN_USER_IDS
+  ? process.env.LOGIC_ADMIN_USER_IDS.split(',').map(id => id.trim())
+  : [];
+
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+// Initialize Slack app
+const app = new App({
+  token: process.env.SLACK_BOT_TOKEN,
+  signingSecret: process.env.SLACK_SIGNING_SECRET,
+  logLevel: LogLevel.INFO,
+  processBeforeResponse: true,
+});
+
+// Cache bot user ID / bot ID (set during startup)
+let BOT_USER_ID: string | null = null;
+let BOT_ID: string | null = null;
+
+// Types
+interface RoundState {
+  version: string;
+  op: string; // User ID of the OP
+  status: 'OPEN' | 'SOLVED';
+  threadTs: string; // Thread timestamp (root message ts for the round)
+  channelId: string;
+}
+
+interface ScoreboardData {
+  scores: Record<string, number>; // userId -> score
+  lastUpdated: string; // ISO timestamp
+}
+
+interface SolvePromptPayload {
+  channelId: string;
+  threadTs: string;
+  guessAuthorId: string;
+  roundControlTs: string;
+  questionText: string;
+  answerText: string;
+  dmChannelId: string;
+  dmMessageTs: string;
+}
+
+// Helper: Check if channel is allowed
+function isAllowedChannel(channelId: string): boolean {
+  return ALLOWED_CHANNEL_IDS.includes(channelId);
+}
+
+// Helper: Check if user is admin
+function isAdmin(userId: string): boolean {
+  return ADMIN_USER_IDS.includes(userId);
+}
+
+// Helper: Parse round state from bot message text
+function parseRoundState(text: string): RoundState | null {
+  try {
+    // Format: [logic_round v1] op=U123 status=OPEN threadTs=123.456 channelId=C123
+    const match = text.match(
+      /\[logic_round v(\d+)\]\s+op=(\w+)\s+status=(\w+)\s+threadTs=([\d.]+)\s+channelId=(\w+)/
+    );
+    if (!match) return null;
+
+    return {
+      version: match[1],
+      op: match[2],
+      status: match[3] as 'OPEN' | 'SOLVED',
+      threadTs: match[4],
+      channelId: match[5],
+    };
+  } catch {
+    return null;
+  }
+}
+
+// Helper: Format round state to bot message text
+function formatRoundState(state: RoundState): string {
+  return `[logic_round v${state.version}] op=${state.op} status=${state.status} threadTs=${state.threadTs} channelId=${state.channelId}`;
+}
+
+// Helper: Get bot user ID / bot ID (cached)
+async function ensureBotIdentity(): Promise<{ botUserId: string; botId: string | null }> {
+  if (!BOT_USER_ID) {
+    const authResult = await app.client.auth.test();
+    BOT_USER_ID = authResult.user_id!;
+    BOT_ID = authResult.bot_id || null;
+  }
+  return { botUserId: BOT_USER_ID!, botId: BOT_ID };
+}
+
+// Helper: Find round control message in a thread
+async function findRoundControlMessage(
+  channelId: string,
+  threadTs: string
+): Promise<{ ts: string; state: RoundState } | null> {
+  try {
+    const result = await app.client.conversations.replies({
+      channel: channelId,
+      ts: threadTs,
+    });
+
+    if (!result.messages) return null;
+
+    // Find the bot's control message
+    const { botUserId, botId } = await ensureBotIdentity();
+    for (const message of result.messages) {
+      const msgAny = message as any;
+      const isFromThisBot =
+        (message.user && message.user === botUserId) ||
+        (botId && msgAny.bot_id && msgAny.bot_id === botId);
+
+      if (
+        isFromThisBot &&
+        message.text &&
+        message.text.startsWith('[logic_round')
+      ) {
+        const state = parseRoundState(message.text);
+        if (state) {
+          return { ts: message.ts!, state };
+        }
+      }
+    }
+
+    return null;
+  } catch (error) {
+    console.error('Error finding round control message:', error);
+    return null;
+  }
+}
+
+// Helper: Get or create scoreboard message
+async function getOrCreateScoreboard(channelId: string): Promise<string> {
+  try {
+    // Get pinned messages
+    const pins = await app.client.pins.list({ channel: channelId });
+
+    if (pins.items) {
+      const { botUserId } = await ensureBotIdentity();
+
+      // Find existing scoreboard
+      for (const item of pins.items) {
+        // Check if item is a message type and has message property
+        if ('message' in item && item.message) {
+          const message = item.message as any; // Type assertion needed due to Slack API types
+          if (message.user === botUserId) {
+            const text = message.text || '';
+            if (text.includes('"scores"') || text.includes('Scoreboard')) {
+              return message.ts!;
+            }
+          }
+        }
+      }
+    }
+
+    // Create new scoreboard
+    const result = await app.client.chat.postMessage({
+      channel: channelId,
+      text: 'Scoreboard',
+    });
+
+    const scoreboardData: ScoreboardData = {
+      scores: {},
+      lastUpdated: new Date().toISOString(),
+    };
+
+    // Update with JSON data
+    await app.client.chat.update({
+      channel: channelId,
+      ts: result.ts!,
+      text: `Scoreboard\n\`\`\`json\n${JSON.stringify(scoreboardData, null, 2)}\n\`\`\``,
+    });
+
+    // Pin the message
+    await app.client.pins.add({
+      channel: channelId,
+      timestamp: result.ts!,
+    });
+
+    return result.ts!;
+  } catch (error) {
+    console.error('Error getting/creating scoreboard:', error);
+    throw error;
+  }
+}
+
+// Helper: Get scoreboard data
+async function getScoreboardData(channelId: string): Promise<ScoreboardData> {
+  try {
+    const scoreboardTs = await getOrCreateScoreboard(channelId);
+    const result = await app.client.conversations.history({
+      channel: channelId,
+      latest: scoreboardTs,
+      limit: 1,
+      inclusive: true,
+    });
+
+    if (!result.messages || result.messages.length === 0) {
+      return { scores: {}, lastUpdated: new Date().toISOString() };
+    }
+
+    const message = result.messages[0];
+    const text = message.text || '';
+
+    // Extract JSON from code block
+    const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[1]);
+    }
+
+    // Fallback: try parsing entire message
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { scores: {}, lastUpdated: new Date().toISOString() };
+    }
+  } catch (error) {
+    console.error('Error getting scoreboard data:', error);
+    return { scores: {}, lastUpdated: new Date().toISOString() };
+  }
+}
+
+// Helper: Update scoreboard
+async function updateScoreboard(
+  channelId: string,
+  updateFn: (data: ScoreboardData) => ScoreboardData
+): Promise<void> {
+  try {
+    const scoreboardTs = await getOrCreateScoreboard(channelId);
+    const currentData = await getScoreboardData(channelId);
+    const updatedData = updateFn(currentData);
+    updatedData.lastUpdated = new Date().toISOString();
+
+    await app.client.chat.update({
+      channel: channelId,
+      ts: scoreboardTs,
+      text: `Scoreboard\n\`\`\`json\n${JSON.stringify(updatedData, null, 2)}\n\`\`\``,
+    });
+  } catch (error) {
+    console.error('Error updating scoreboard:', error);
+    throw error;
+  }
+}
+
+// Helper: Add points to a user
+async function addPoints(
+  channelId: string,
+  userId: string,
+  points: number
+): Promise<void> {
+  await updateScoreboard(channelId, (data) => {
+    data.scores[userId] = (data.scores[userId] || 0) + points;
+    // prevent negative scores (optional safety)
+    if (data.scores[userId] < 0) data.scores[userId] = 0;
+    return data;
+  });
+}
+
+// Helper: Check if message looks like a guess
+function looksLikeGuess(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  return (
+    lower.startsWith('my guess') ||
+    lower.startsWith('guess:') ||
+    lower.startsWith('answer:') ||
+    lower.startsWith('is it')
+  );
+}
+
+// Helper: Open a DM with a user
+async function openDmChannel(client: any, userId: string): Promise<string> {
+  const res = await client.conversations.open({ users: userId });
+  const dmChannelId = res.channel?.id;
+  if (!dmChannelId) throw new Error('Failed to open DM channel');
+  return dmChannelId;
+}
+
+// Helper: Slack message permalink (for "View thread" link button)
+async function getPermalink(client: any, channelId: string, messageTs: string): Promise<string | null> {
+  try {
+    const res = await client.chat.getPermalink({ channel: channelId, message_ts: messageTs });
+    return res.permalink || null;
+  } catch (e) {
+    console.error('Error getting permalink:', e);
+    return null;
+  }
+}
+
+// Helper: Create DM solve confirmation blocks
+function buildSolveDmBlocks(params: {
+  guessAuthorId: string;
+  questionText: string;
+  answerText: string;
+  permalink: string | null;
+  payloadValue: string;
+}) {
+  const { guessAuthorId, questionText, answerText, permalink, payloadValue } = params;
+
+  const blocks: any[] = [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          `Has <@${guessAuthorId}> solved your question:\n\n` +
+          `> *"${questionText}"*\n\n` +
+          `with their answer:\n\n` +
+          `> _"${answerText}"_`,
+      },
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Yes' },
+          style: 'primary',
+          action_id: 'confirm_solve',
+          value: payloadValue,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'No' },
+          action_id: 'cancel_solve',
+          value: payloadValue,
+        },
+      ],
+    },
+  ];
+
+  // Add "View thread" link button if we have a permalink
+  if (permalink) {
+    blocks.push({
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'View thread' },
+          url: permalink,
+          action_id: 'view_thread_link',
+        },
+      ],
+    });
+  }
+
+  return blocks;
+}
+
+// Helper: Update DM message in-place to show status
+async function updateDmMessageStatus(client: any, dmChannelId: string, dmMessageTs: string, text: string, status: 'CONFIRMED' | 'CANCELLED') {
+  const statusEmoji = status === 'CONFIRMED' ? '✅' : '❌';
+  await client.chat.update({
+    channel: dmChannelId,
+    ts: dmMessageTs,
+    text: `${statusEmoji} ${text}`,
+    blocks: [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `${statusEmoji} ${text}`,
+        },
+      },
+    ],
+  });
+}
+
+// Slash command handler
+app.command('/logic', async ({ command, ack, respond, client }) => {
+  await ack();
+
+  const { channel_id, user_id, text } = command;
+
+  // Check if channel is allowed
+  if (!isAllowedChannel(channel_id)) {
+    await respond({
+      response_type: 'ephemeral',
+      text: "Sorry, I only operate in specific channels. This command isn't available here.",
+    });
+    return;
+  }
+
+  // IMPORTANT: don't lowercase the raw text globally, because it can contain <@U...> mentions
+  const rawText = (text || '').trim();
+  const commandTextLower = rawText.toLowerCase();
+
+  // Handle subcommands
+  if (commandTextLower === 'help') {
+    await respond({
+      response_type: 'ephemeral',
+      text: `*Logic Bot Commands:*
+
+\`/logic <your question>\` - Start a new round by posting the question to the channel and starting a thread
+\`/logic help\` - Show this help message
+\`/logic scoreboard\` - Ensure scoreboard exists and show it
+\`/logic stats\` - Show your stats
+\`/logic stats @user\` - Show stats for a user
+
+*Admin Commands:*
+\`/logic setscore @user 10\` - Set a user's score
+\`/logic addpoint @user\` - Add 1 point to a user
+\`/logic removepoint @user\` - Remove 1 point from a user
+
+*How it works:*
+- A round = a Slack thread (the bot creates the thread for you)
+- Start a round by running \`/logic <question>\` in the channel
+- The OP (who started the round) reacts with :yes: to a guess to solve it
+- Points are awarded when a round is solved`,
+    });
+    return;
+  }
+
+  if (commandTextLower === 'scoreboard') {
+    try {
+      await getOrCreateScoreboard(channel_id);
+      const data = await getScoreboardData(channel_id);
+
+      // Format scoreboard for display
+      const entries = Object.entries(data.scores)
+        .sort(([, a], [, b]) => b - a)
+        .slice(0, 20); // Top 20
+
+      let scoreboardText = '*Scoreboard*\n\n';
+      if (entries.length === 0) {
+        scoreboardText += 'No scores yet.';
+      } else {
+        for (const [userId, score] of entries) {
+          try {
+            const userInfo = await client.users.info({ user: userId });
+            const displayName = userInfo.user?.real_name || userInfo.user?.name || userId;
+            scoreboardText += `${displayName}: ${score} point${score !== 1 ? 's' : ''}\n`;
+          } catch {
+            scoreboardText += `<@${userId}>: ${score} point${score !== 1 ? 's' : ''}\n`;
+          }
+        }
+      }
+
+      await respond({
+        response_type: 'ephemeral',
+        text: scoreboardText,
+      });
+    } catch (error) {
+      console.error('Error showing scoreboard:', error);
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Error displaying scoreboard.',
+      });
+    }
+    return;
+  }
+
+  if (commandTextLower.startsWith('stats')) {
+    try {
+      let targetUserId = user_id;
+
+      // Check if @user was mentioned (use rawText, not lowercased)
+      const mentionMatch = rawText.match(/stats\s+<@(\w+)>/i);
+      if (mentionMatch) {
+        targetUserId = mentionMatch[1];
+      }
+
+      const data = await getScoreboardData(channel_id);
+      const score = data.scores[targetUserId] || 0;
+
+      const userInfo = await client.users.info({ user: targetUserId });
+      const displayName = userInfo.user?.real_name || userInfo.user?.name || targetUserId;
+
+      await respond({
+        response_type: 'ephemeral',
+        text: `*Stats for ${displayName}:*\n${score} point${score !== 1 ? 's' : ''}`,
+      });
+    } catch (error) {
+      console.error('Error showing stats:', error);
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Error displaying stats.',
+      });
+    }
+    return;
+  }
+
+  // Admin commands
+  if (commandTextLower.startsWith('setscore')) {
+    if (!isAdmin(user_id)) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Sorry, only admins can use this command.',
+      });
+      return;
+    }
+
+    // Use rawText to preserve mention formatting, but allow uppercase/lowercase command
+    const match = rawText.match(/setscore\s+<@(\w+)>\s+(\d+)/i);
+    if (!match) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Usage: /logic setscore @user <points>',
+      });
+      return;
+    }
+
+    const targetUserId = match[1];
+    const points = parseInt(match[2], 10);
+
+    try {
+      await updateScoreboard(channel_id, (data) => {
+        data.scores[targetUserId] = points;
+        if (data.scores[targetUserId] < 0) data.scores[targetUserId] = 0;
+        return data;
+      });
+
+      const userInfo = await client.users.info({ user: targetUserId });
+      const displayName = userInfo.user?.real_name || userInfo.user?.name || targetUserId;
+
+      await respond({
+        response_type: 'ephemeral',
+        text: `Set ${displayName}'s score to ${points} points.`,
+      });
+    } catch (error) {
+      console.error('Error setting score:', error);
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Error setting score.',
+      });
+    }
+    return;
+  }
+
+  if (commandTextLower.startsWith('addpoint')) {
+    if (!isAdmin(user_id)) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Sorry, only admins can use this command.',
+      });
+      return;
+    }
+
+    const match = rawText.match(/addpoint\s+<@(\w+)>/i);
+    if (!match) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Usage: /logic addpoint @user',
+      });
+      return;
+    }
+
+    const targetUserId = match[1];
+
+    try {
+      await addPoints(channel_id, targetUserId, 1);
+
+      const userInfo = await client.users.info({ user: targetUserId });
+      const displayName = userInfo.user?.real_name || userInfo.user?.name || targetUserId;
+
+      await respond({
+        response_type: 'ephemeral',
+        text: `Added 1 point to ${displayName}.`,
+      });
+    } catch (error) {
+      console.error('Error adding point:', error);
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Error adding point.',
+      });
+    }
+    return;
+  }
+
+  if (commandTextLower.startsWith('removepoint')) {
+    if (!isAdmin(user_id)) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Sorry, only admins can use this command.',
+      });
+      return;
+    }
+
+    const match = rawText.match(/removepoint\s+<@(\w+)>/i);
+    if (!match) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Usage: /logic removepoint @user',
+      });
+      return;
+    }
+
+    const targetUserId = match[1];
+
+    try {
+      await addPoints(channel_id, targetUserId, -1);
+
+      const userInfo = await client.users.info({ user: targetUserId });
+      const displayName = userInfo.user?.real_name || userInfo.user?.name || targetUserId;
+
+      await respond({
+        response_type: 'ephemeral',
+        text: `Removed 1 point from ${displayName}.`,
+      });
+    } catch (error) {
+      console.error('Error removing point:', error);
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Error removing point.',
+      });
+    }
+    return;
+  }
+
+  // /logic <question> posts the question to the channel, then starts a thread on that post.
+  if (!rawText) {
+    await respond({
+      response_type: 'ephemeral',
+      text: 'Usage: `/logic <your question>`\nExample: `/logic I speak without a mouth and hear without ears. What am I?`',
+    });
+    return;
+  }
+
+  try {
+    // 1) Post the riddle to the channel as a normal message
+    const riddlePost = await client.chat.postMessage({
+      channel: channel_id,
+      text: `🧠 <@${user_id}> asks:\n_*${rawText}*_`,
+    });
+
+    if (!riddlePost.ts) {
+      throw new Error('Failed to create puzzle post (missing ts).');
+    }
+
+    const threadTs = riddlePost.ts;
+
+    // 2) Ensure a round doesn't already exist in that new thread (it shouldn't, but keeps logic consistent)
+    const existingRound = await findRoundControlMessage(channel_id, threadTs);
+    if (existingRound) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'A round already exists for that puzzle thread.',
+      });
+      return;
+    }
+
+    // 3) Create round control message in the thread (first reply)
+    const roundState: RoundState = {
+      version: '1',
+      op: user_id,
+      status: 'OPEN',
+      threadTs: threadTs,
+      channelId: channel_id,
+    };
+
+    await client.chat.postMessage({
+      channel: channel_id,
+      thread_ts: threadTs,
+      text: formatRoundState(roundState),
+    });
+
+    // Optional: friendly instruction message (keeps control message machine-parseable)
+    await client.chat.postMessage({
+      channel: channel_id,
+      thread_ts: threadTs,
+      text:
+        `Round OPEN - OP: <@${user_id}>\n` +
+        `Reply in this thread with guesses.\n` +
+        `OP reacts with :yes: on the correct guess to solve (you’ll be asked to confirm).`,
+    });
+
+    await respond({
+      response_type: 'ephemeral',
+      text: 'Puzzle posted and round started. Use the thread under the puzzle for guesses.',
+    });
+  } catch (error) {
+    console.error('Error starting round:', error);
+    await respond({
+      response_type: 'ephemeral',
+      text: 'Error starting round.',
+    });
+  }
+});
+
+// Reaction handler: OP reacts with :yes: to solve
+app.event('reaction_added', async ({ event, client }) => {
+  // Only process reactions in allowed channels
+  if (!event.item?.channel || !isAllowedChannel(event.item.channel)) {
+    return;
+  }
+
+  // Only process :yes: reactions
+  if (event.reaction !== 'yes') {
+    console.log('Reaction is not :yes:', event.reaction);
+    return;
+  }
+  console.log('Reaction is :yes:', event.reaction);
+
+  if (!event.item.ts) {
+    console.log('Reaction item ts is missing');
+    return;
+  }
+  console.log('Reaction item ts is present');
+
+  const channelId = event.item.channel;
+  const reactedMessageTs = event.item.ts;
+
+  try {
+    // Get the message that was reacted to to find the thread
+    const messageInfo = await client.conversations.history({
+      channel: channelId,
+      latest: reactedMessageTs,
+      limit: 1,
+      inclusive: true,
+    });
+
+    if (!messageInfo.messages || messageInfo.messages.length === 0) {
+      console.log('No messages found in history');
+      return;
+    } else {
+      console.log('Messages found in history');
+    }
+
+    const reactedMessage = messageInfo.messages[0];
+    const answerText = (reactedMessage.text || '(no text)').trim();
+
+    // Must be in a thread
+    if (!reactedMessage.thread_ts) {
+      console.log('Reacted message thread ts is missing');
+      return;
+    } else {
+      console.log('Reacted message thread ts is present');
+    }
+
+    const threadTs = reactedMessage.thread_ts;
+
+    // Find the round
+    const roundInfo = await findRoundControlMessage(channelId, threadTs);
+    if (!roundInfo) {
+      console.log('No round found in this thread');
+      return; // No round in this thread
+    } else {
+      console.log('Round found in this thread');
+    }
+
+    const { state } = roundInfo;
+
+    // Check if already solved
+    if (state.status === 'SOLVED') {
+      console.log('Round is already solved');
+      return;
+    } else {
+      console.log('Round is not solved');
+    }
+
+    // Check if the reactor is the OP
+    if (event.user !== state.op) {
+      console.log('Reactor is not the OP');
+      return; // Only OP can solve
+    } else {
+      console.log('Reactor is the OP');
+    }
+
+    // Get the author of the reacted message
+    if (!reactedMessage.user) {
+      console.log('Reacted message user is missing');
+      return;
+    } else {
+      console.log('Reacted message user is present');
+      console.log(reactedMessage);
+    }
+
+    const guessAuthorId = event.item_user;
+
+    // Don't let OP solve their own guess (except in test channel)
+    if (guessAuthorId === state.op) {
+      console.log('Guess author is the OP');
+      if (channelId === process.env.LOGIC_CHANNEL_ID_TEST) {
+        console.log('Guess author is the OP in test channel', guessAuthorId, state.op);
+      } else {
+        return;
+      }
+    } else {
+        console.log('Guess author is not the OP', guessAuthorId, state.op);
+    }
+
+    // Fetch the original question (thread root message)
+    const threadRoot = await client.conversations.history({
+      channel: channelId,
+      latest: threadTs,
+      inclusive: true,
+      limit: 1,
+    });
+
+    const rootMsg = threadRoot.messages?.[0];
+    const questionTextRaw = (rootMsg?.text || '(unknown question)').trim();
+    const questionText = questionTextRaw.replace(/^🧠 Logicbot asks:\n_*([\s\S]*?)\*_$|^🧠 Logicbot asks:\n_?\*?/, '').replace(/_?\*?$/, '').trim() || questionTextRaw;
+
+    // Build payload + permalink
+    const dmChannelId = await openDmChannel(client, state.op);
+    const permalink = await getPermalink(client, channelId, threadTs);
+
+    const dmMessageText = 'Confirm solution';
+    const initialPayload: SolvePromptPayload = {
+      channelId,
+      threadTs,
+      guessAuthorId,
+      roundControlTs: roundInfo.ts,
+      questionText,
+      answerText,
+      dmChannelId,
+      dmMessageTs: '', // set after post
+    };
+
+    // Post DM first (need ts for update-in-place)
+    const dmPost = await client.chat.postMessage({
+      channel: dmChannelId,
+      text: dmMessageText,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text:
+              `Has <@${guessAuthorId}> solved your question:\n\n` +
+              `> *"${questionText}"*\n\n` +
+              `with their answer:\n\n` +
+              `> _"${answerText}"_`,
+          },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Yes' },
+              style: 'primary',
+              action_id: 'confirm_solve',
+              value: '__PAYLOAD_PLACEHOLDER__',
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'No' },
+              action_id: 'cancel_solve',
+              value: '__PAYLOAD_PLACEHOLDER__',
+            },
+          ],
+        },
+        ...(permalink
+          ? [
+              {
+                type: 'actions',
+                elements: [
+                  {
+                    type: 'button',
+                    text: { type: 'plain_text', text: 'View thread' },
+                    url: permalink,
+                    action_id: 'view_thread_link',
+                  },
+                ],
+              } as any,
+            ]
+          : []),
+      ],
+    });
+
+    if (!dmPost.ts) throw new Error('Failed to post DM confirmation (missing ts)');
+
+    // Now we have dmMessageTs; update DM with correct payload values (includes dm ids for in-place update)
+    initialPayload.dmMessageTs = dmPost.ts;
+
+    const payloadValue = JSON.stringify(initialPayload);
+
+    // Update DM so buttons contain the correct payload (and acts as a "single source of truth")
+    await client.chat.update({
+      channel: dmChannelId,
+      ts: dmPost.ts,
+      text: dmMessageText,
+      blocks: buildSolveDmBlocks({
+        guessAuthorId,
+        questionText,
+        answerText,
+        permalink,
+        payloadValue,
+      }),
+    });
+
+    console.log('DM confirmation sent to OP');
+  } catch (error) {
+    console.error('Error handling reaction:', error);
+  }
+});
+
+// Button action handler: Confirm solve
+app.action('confirm_solve', async ({ action, ack, client }) => {
+  await ack();
+
+  if (action.type !== 'button') return;
+
+  try {
+    const data = JSON.parse((action as any).value) as SolvePromptPayload;
+    const { channelId, threadTs, guessAuthorId, roundControlTs, dmChannelId, dmMessageTs } = data;
+
+    // Anti-double-confirm guard: re-check round status
+    const roundInfo = await findRoundControlMessage(channelId, threadTs);
+    if (!roundInfo || roundInfo.state.status === 'SOLVED') {
+      await updateDmMessageStatus(
+        client,
+        dmChannelId,
+        dmMessageTs,
+        'This round was already solved (no changes made).',
+        'CANCELLED'
+      );
+      return;
+    }
+
+    // Update round state to SOLVED
+    const updatedState: RoundState = {
+      ...roundInfo.state,
+      status: 'SOLVED',
+    };
+
+    await client.chat.update({
+      channel: channelId,
+      ts: roundControlTs,
+      text: formatRoundState(updatedState),
+    });
+
+    // Award point
+    await addPoints(channelId, guessAuthorId, 1);
+
+    // Post generic solved message
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: '✅ Solved. Point goes to <@' + guessAuthorId + '>',
+    });
+
+    // Update the DM message in place
+    await updateDmMessageStatus(
+      client,
+      dmChannelId,
+      dmMessageTs,
+      'Confirmed — round solved and 1 point awarded to <@' + guessAuthorId + '>.',
+      'CONFIRMED'
+    );
+  } catch (error) {
+    console.error('Error confirming solve:', error);
+
+    // Best-effort DM update if payload present
+    try {
+      const value = (action as any).value;
+      if (value) {
+        const data = JSON.parse(value) as Partial<SolvePromptPayload>;
+        if (data.dmChannelId && data.dmMessageTs) {
+          await updateDmMessageStatus(
+            client,
+            data.dmChannelId,
+            data.dmMessageTs,
+            'Error solving round. Please try again.',
+            'CANCELLED'
+          );
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+});
+
+// Button action handler: Cancel solve
+app.action('cancel_solve', async ({ action, ack, client }) => {
+  await ack();
+  if (action.type !== 'button') return;
+
+  try {
+    const data = JSON.parse((action as any).value) as SolvePromptPayload;
+    const { dmChannelId, dmMessageTs } = data;
+
+    // Update the DM message in place
+    await updateDmMessageStatus(
+      client,
+      dmChannelId,
+      dmMessageTs,
+      'Cancelled — round remains open.',
+      'CANCELLED'
+    );
+  } catch (error) {
+    console.error('Error cancelling solve:', error);
+  }
+});
+
+// Message handler: Auto-nudge for solved rounds
+app.message(async ({ message, client }) => {
+  // Only process user messages (not bot messages or subtypes) in allowed channels
+  if (
+    message.subtype ||
+    !('channel' in message) ||
+    !isAllowedChannel(message.channel) ||
+    !('user' in message) ||
+    !message.user
+  ) {
+    return;
+  }
+
+  // Must be in a thread
+  if (!('thread_ts' in message) || !message.thread_ts) {
+    return;
+  }
+
+  const channelId = message.channel;
+  const threadTs = message.thread_ts;
+  const messageText = message.text || '';
+
+  // Check if message looks like a guess
+  if (!looksLikeGuess(messageText)) {
+    return;
+  }
+
+  try {
+    // Check if round is solved
+    const roundInfo = await findRoundControlMessage(channelId, threadTs);
+    if (!roundInfo || roundInfo.state.status !== 'SOLVED') {
+      return; // Not solved, no nudge needed
+    }
+
+    // Post nudge
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: "Heads-up: this one's already been solved - feel free to keep guessing for fun though!",
+    });
+  } catch (error) {
+    console.error('Error checking for auto-nudge:', error);
+  }
+});
+
+// Start the app
+(async () => {
+  try {
+    await app.start(PORT);
+    console.log(`⚡️ Logic Bot is running on port ${PORT}!`);
+  } catch (error) {
+    console.error('Failed to start app:', error);
+    process.exit(1);
+  }
+})();
