@@ -52,7 +52,7 @@ interface RoundState {
 }
 
 interface ScoreboardData {
-  scores: Record<string, number>; // userId -> score
+  scoresByYear: Record<string, Record<string, number>>; // year -> userId -> score
   lastUpdated: string; // ISO timestamp
 }
 
@@ -184,7 +184,7 @@ async function getOrCreateScoreboard(channelId: string): Promise<string> {
     });
 
     const scoreboardData: ScoreboardData = {
-      scores: {},
+      scoresByYear: {},
       lastUpdated: new Date().toISOString(),
     };
 
@@ -220,7 +220,7 @@ async function getScoreboardData(channelId: string): Promise<ScoreboardData> {
     });
 
     if (!result.messages || result.messages.length === 0) {
-      return { scores: {}, lastUpdated: new Date().toISOString() };
+      return { scoresByYear: {}, lastUpdated: new Date().toISOString() };
     }
 
     const message = result.messages[0];
@@ -234,13 +234,22 @@ async function getScoreboardData(channelId: string): Promise<ScoreboardData> {
 
     // Fallback: try parsing entire message
     try {
-      return JSON.parse(text);
+      const parsed = JSON.parse(text);
+      // Ensure scoresByYear exists for backward compatibility
+      if (!parsed.scoresByYear) {
+        parsed.scoresByYear = {};
+      }
+      // Remove legacy scores field if it exists
+      if (parsed.scores) {
+        delete parsed.scores;
+      }
+      return parsed;
     } catch {
-      return { scores: {}, lastUpdated: new Date().toISOString() };
+      return { scoresByYear: {}, lastUpdated: new Date().toISOString() };
     }
   } catch (error) {
     console.error('Error getting scoreboard data:', error);
-    return { scores: {}, lastUpdated: new Date().toISOString() };
+    return { scoresByYear: {}, lastUpdated: new Date().toISOString() };
   }
 }
 
@@ -266,16 +275,35 @@ async function updateScoreboard(
   }
 }
 
-// Helper: Add points to a user
+// Helper: Extract year from Slack timestamp (ts format: "1234567890.123456")
+function getYearFromTimestamp(ts: string): string {
+  const timestamp = parseFloat(ts);
+  const date = new Date(timestamp * 1000);
+  return date.getFullYear().toString();
+}
+
+// Helper: Add points to a user (with optional year tracking)
 async function addPoints(
   channelId: string,
   userId: string,
-  points: number
+  points: number,
+  year?: string
 ): Promise<void> {
   await updateScoreboard(channelId, (data) => {
-    data.scores[userId] = (data.scores[userId] || 0) + points;
-    // prevent negative scores (optional safety)
-    if (data.scores[userId] < 0) data.scores[userId] = 0;
+    // Initialize scoresByYear if it doesn't exist
+    if (!data.scoresByYear) {
+      data.scoresByYear = {};
+    }
+
+    // Year-based scores (year is required)
+    if (year) {
+      if (!data.scoresByYear[year]) {
+        data.scoresByYear[year] = {};
+      }
+      data.scoresByYear[year][userId] = (data.scoresByYear[year][userId] || 0) + points;
+      if (data.scoresByYear[year][userId] < 0) data.scoresByYear[year][userId] = 0;
+    }
+
     return data;
   });
 }
@@ -408,28 +436,34 @@ app.command('/logic', async ({ command, ack, respond, client }) => {
   const rawText = (text || '').trim();
   const commandTextLower = rawText.toLowerCase();
 
-  // Handle subcommands
-  if (commandTextLower === 'help') {
-    await respond({
-      response_type: 'ephemeral',
-      text: `*Logic Bot Commands:*
-
+  const section1 = `*Logic Bot Commands:*
 \`/logic <your question>\` - Start a new round by posting the question to the channel and starting a thread
 \`/logic help\` - Show this help message
 \`/logic scoreboard\` - Ensure scoreboard exists and show it
 \`/logic stats\` - Show your stats
-\`/logic stats @user\` - Show stats for a user
+\`/logic stats @user\` - Show stats for a user`;
 
-*Admin Commands:*
+let section2 = '';
+if (isAdmin(user_id)) {
+  section2 = `\n\n*Admin Commands:*
 \`/logic setscore @user 10\` - Set a user's score
 \`/logic addpoint @user\` - Add 1 point to a user
-\`/logic removepoint @user\` - Remove 1 point from a user
+\`/logic removepoint @user\` - Remove 1 point from a user`;
+}
 
-*How it works:*
+  const section3 = `\n\n*How it works:*
 - A round = a Slack thread (the bot creates the thread for you)
 - Start a round by running \`/logic <question>\` in the channel
 - The OP (who started the round) reacts with :yes: to a guess to solve it
-- Points are awarded when a round is solved`,
+- Points are awarded when a round is solved`;
+
+  const helpText = `${section1}${section2}${section3}`;
+
+  // Handle subcommands
+  if (commandTextLower === 'help') {
+    await respond({
+      response_type: 'ephemeral',
+      text: helpText,
     });
     return;
   }
@@ -439,23 +473,38 @@ app.command('/logic', async ({ command, ack, respond, client }) => {
       await getOrCreateScoreboard(channel_id);
       const data = await getScoreboardData(channel_id);
 
-      // Format scoreboard for display
-      const entries = Object.entries(data.scores)
-        .sort(([, a], [, b]) => b - a)
-        .slice(0, 20); // Top 20
+      // Ensure scoresByYear exists
+      if (!data.scoresByYear) {
+        data.scoresByYear = {};
+      }
+
+      // Get all years and sort them (newest first)
+      const years = Object.keys(data.scoresByYear).sort((a, b) => parseInt(b) - parseInt(a));
 
       let scoreboardText = '*Scoreboard*\n\n';
-      if (entries.length === 0) {
+
+      if (years.length === 0) {
         scoreboardText += 'No scores yet.';
       } else {
-        for (const [userId, score] of entries) {
-          try {
-            const userInfo = await client.users.info({ user: userId });
-            const displayName = userInfo.user?.real_name || userInfo.user?.name || userId;
-            scoreboardText += `${displayName}: ${score} point${score !== 1 ? 's' : ''}\n`;
-          } catch {
-            scoreboardText += `<@${userId}>: ${score} point${score !== 1 ? 's' : ''}\n`;
+        // Display scores by year
+        for (const year of years) {
+          const yearScores = data.scoresByYear[year];
+          if (!yearScores || Object.keys(yearScores).length === 0) continue;
+
+          scoreboardText += `*${year}*\n`;
+          const entries = Object.entries(yearScores)
+            .sort(([, a], [, b]) => b - a);
+
+          for (const [userId, score] of entries) {
+            try {
+              const userInfo = await client.users.info({ user: userId });
+              const displayName = userInfo.user?.real_name || userInfo.user?.name || userId;
+              scoreboardText += `  ${displayName}: ${score}\n`;
+            } catch {
+              scoreboardText += `  <@${userId}>: ${score}\n`;
+            }
           }
+          scoreboardText += '\n';
         }
       }
 
@@ -484,14 +533,21 @@ app.command('/logic', async ({ command, ack, respond, client }) => {
       }
 
       const data = await getScoreboardData(channel_id);
-      const score = data.scores[targetUserId] || 0;
+      
+      // Calculate total score across all years
+      let totalScore = 0;
+      if (data.scoresByYear) {
+        for (const yearScores of Object.values(data.scoresByYear)) {
+          totalScore += yearScores[targetUserId] || 0;
+        }
+      }
 
       const userInfo = await client.users.info({ user: targetUserId });
       const displayName = userInfo.user?.real_name || userInfo.user?.name || targetUserId;
 
       await respond({
         response_type: 'ephemeral',
-        text: `*Stats for ${displayName}:*\n${score} point${score !== 1 ? 's' : ''}`,
+        text: `*Stats for ${displayName}:*\n${totalScore} point${totalScore !== 1 ? 's' : ''}`,
       });
     } catch (error) {
       console.error('Error showing stats:', error);
@@ -527,9 +583,23 @@ app.command('/logic', async ({ command, ack, respond, client }) => {
     const points = parseInt(match[2], 10);
 
     try {
+      // Use current year for admin-set scores
+      const currentYear = new Date().getFullYear().toString();
       await updateScoreboard(channel_id, (data) => {
-        data.scores[targetUserId] = points;
-        if (data.scores[targetUserId] < 0) data.scores[targetUserId] = 0;
+        // Initialize scoresByYear if it doesn't exist
+        if (!data.scoresByYear) {
+          data.scoresByYear = {};
+        }
+        if (!data.scoresByYear[currentYear]) {
+          data.scoresByYear[currentYear] = {};
+        }
+
+        // Set year-based score
+        data.scoresByYear[currentYear][targetUserId] = points;
+        if (data.scoresByYear[currentYear][targetUserId] < 0) {
+          data.scoresByYear[currentYear][targetUserId] = 0;
+        }
+
         return data;
       });
 
@@ -559,11 +629,11 @@ app.command('/logic', async ({ command, ack, respond, client }) => {
       return;
     }
 
-    const match = rawText.match(/addpoint\s+<@(\w+)>/i);
+    const match = rawText.match(/addpoint\s+@(\w+)/i);
     if (!match) {
       await respond({
         response_type: 'ephemeral',
-        text: 'Usage: /logic addpoint @user',
+        text: 'Usage: /logic addpoint @user, received: ' + rawText,
       });
       return;
     }
@@ -571,7 +641,9 @@ app.command('/logic', async ({ command, ack, respond, client }) => {
     const targetUserId = match[1];
 
     try {
-      await addPoints(channel_id, targetUserId, 1);
+      // Use current year for admin-added points
+      const currentYear = new Date().getFullYear().toString();
+      await addPoints(channel_id, targetUserId, 1, currentYear);
 
       const userInfo = await client.users.info({ user: targetUserId });
       const displayName = userInfo.user?.real_name || userInfo.user?.name || targetUserId;
@@ -611,7 +683,9 @@ app.command('/logic', async ({ command, ack, respond, client }) => {
     const targetUserId = match[1];
 
     try {
-      await addPoints(channel_id, targetUserId, -1);
+      // Use current year for admin-removed points
+      const currentYear = new Date().getFullYear().toString();
+      await addPoints(channel_id, targetUserId, -1, currentYear);
 
       const userInfo = await client.users.info({ user: targetUserId });
       const displayName = userInfo.user?.real_name || userInfo.user?.name || targetUserId;
@@ -724,7 +798,7 @@ app.event('reaction_added', async ({ event, client }) => {
   const reactedMessageTs = event.item.ts;
 
   try {
-    // Get the message that was reacted to to find the thread
+    // First, get the message to find if it's in a thread
     const messageInfo = await client.conversations.history({
       channel: channelId,
       latest: reactedMessageTs,
@@ -735,22 +809,40 @@ app.event('reaction_added', async ({ event, client }) => {
     if (!messageInfo.messages || messageInfo.messages.length === 0) {
       console.log('No messages found in history');
       return;
-    } else {
-      console.log('Messages found in history');
     }
 
-    const reactedMessage = messageInfo.messages[0];
-    const answerText = (reactedMessage.text || '(no text)').trim();
-
+    const rootMessage = messageInfo.messages[0];
+    
     // Must be in a thread
-    if (!reactedMessage.thread_ts) {
+    if (!rootMessage.thread_ts) {
       console.log('Reacted message thread ts is missing');
       return;
-    } else {
-      console.log('Reacted message thread ts is present');
     }
 
-    const threadTs = reactedMessage.thread_ts;
+    const threadTs = rootMessage.thread_ts;
+
+    // Get all messages in the thread to find the specific one that was reacted to
+    const threadReplies = await client.conversations.replies({
+      channel: channelId,
+      ts: threadTs,
+    });
+
+    if (!threadReplies.messages) {
+      console.log('No thread replies found');
+      return;
+    }
+
+    // Find the exact message that was reacted to
+    const reactedMessage = threadReplies.messages.find(
+      (msg) => msg.ts === reactedMessageTs
+    );
+
+    if (!reactedMessage) {
+      console.log('Reacted message not found in thread');
+      return;
+    }
+
+    const answerText = (reactedMessage.text || '(no text)').trim();
 
     // Find the round
     const roundInfo = await findRoundControlMessage(channelId, threadTs);
@@ -812,7 +904,10 @@ app.event('reaction_added', async ({ event, client }) => {
 
     const rootMsg = threadRoot.messages?.[0];
     const questionTextRaw = (rootMsg?.text || '(unknown question)').trim();
-    const questionText = questionTextRaw.replace(/^🧠 Logicbot asks:\n_*([\s\S]*?)\*_$|^🧠 Logicbot asks:\n_?\*?/, '').replace(/_?\*?$/, '').trim() || questionTextRaw;
+    const regex = /\s*?:brain: (.+) asks:\n/;
+    const questionText = questionTextRaw.replace(regex, '').trim() || questionTextRaw;
+    console.log('questionTextRaw', questionTextRaw);
+    console.log('questionText', questionText);
 
     // Build payload + permalink
     const dmChannelId = await openDmChannel(client, state.op);
@@ -841,7 +936,7 @@ app.event('reaction_added', async ({ event, client }) => {
             type: 'mrkdwn',
             text:
               `Has <@${guessAuthorId}> solved your question:\n\n` +
-              `> *"${questionText}"*\n\n` +
+              `> "${questionText}"\n\n` +
               `with their answer:\n\n` +
               `> _"${answerText}"_`,
           },
@@ -944,8 +1039,9 @@ app.action('confirm_solve', async ({ action, ack, client }) => {
       text: formatRoundState(updatedState),
     });
 
-    // Award point
-    await addPoints(channelId, guessAuthorId, 1);
+    // Award point (with year tracking from thread timestamp)
+    const year = getYearFromTimestamp(threadTs);
+    await addPoints(channelId, guessAuthorId, 1, year);
 
     // Post generic solved message
     await client.chat.postMessage({
