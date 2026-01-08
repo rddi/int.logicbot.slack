@@ -57,6 +57,7 @@ interface RoundState {
   status: RoundStatus;
   threadTs: string; // Thread timestamp (root message ts for the round)
   channelId: string;
+  question?: string; // Plain question text (stored to avoid parsing)
   answer?: string; // The accepted answer (only present when SOLVED)
 }
 
@@ -218,6 +219,41 @@ async function ensureBotIdentity(): Promise<{ botUserId: string; botId: string |
     BOT_ID = authResult.bot_id || null;
   }
   return { botUserId: BOT_USER_ID!, botId: BOT_ID };
+}
+
+// Helper: Get question text from round state or parse from thread root (fallback)
+async function getQuestionText(
+  client: any,
+  channelId: string,
+  threadTs: string,
+  roundState?: RoundState
+): Promise<string> {
+  // If question is stored in state, use it
+  if (roundState?.question) {
+    return roundState.question;
+  }
+
+  // Fallback: parse from thread root message
+  try {
+    const threadRoot = await client.conversations.history({
+      channel: channelId,
+      latest: threadTs,
+      inclusive: true,
+      limit: 1,
+    });
+
+    const rootMsg = threadRoot.messages?.[0];
+    const questionTextRaw = (rootMsg?.text || '(unknown question)').trim();
+    
+    // Try multiple parsing patterns for backwards compatibility
+    let questionText = questionTextRaw.replace(regex, '').trim() || questionTextRaw;
+    questionText = questionText.replace(/^🧠 <@\w+> asks:\n_?\*?/, '').replace(/_?\*?$/, '').trim() || questionText;
+    
+    return questionText;
+  } catch (error) {
+    console.error('Error parsing question text:', error);
+    return '(unknown question)';
+  }
 }
 
 // Helper: Find round control message in a thread
@@ -1315,6 +1351,7 @@ if (isAdmin(user_id)) {
       status: RoundStatus.OPEN,
       threadTs: threadTs,
       channelId: channel_id,
+      question: rawText, // Store plain question text
     };
 
     await client.chat.postMessage({
@@ -1466,20 +1503,8 @@ app.event('reaction_added', async ({ event, client }) => {
         console.log('Guess author is not the OP', guessAuthorId, state.op);
     }
 
-    // Fetch the original question (thread root message)
-    const threadRoot = await client.conversations.history({
-      channel: channelId,
-      latest: threadTs,
-      inclusive: true,
-      limit: 1,
-    });
-
-    const rootMsg = threadRoot.messages?.[0];
-    const questionTextRaw = (rootMsg?.text || '(unknown question)').trim();
-    
-    const questionText = questionTextRaw.replace(regex, '').trim() || questionTextRaw;
-    console.log('questionTextRaw', questionTextRaw);
-    console.log('questionText', questionText);
+    // Get question text from round state (or parse as fallback)
+    const questionText = await getQuestionText(client, channelId, threadTs, state);
 
     // Build payload + permalink
     const dmChannelId = await openDmChannel(client, state.op);
@@ -1793,18 +1818,8 @@ app.view('private_answer_modal', async ({ ack, view, client }) => {
       return;
     }
 
-    // Get question text from thread root
-    const threadRoot = await client.conversations.history({
-      channel: channelId,
-      latest: threadTs,
-      inclusive: true,
-      limit: 1,
-    });
-
-    const rootMsg = threadRoot.messages?.[0];
-    const questionTextRaw = (rootMsg?.text || '(unknown question)').trim();
-    // Extract question text, removing the "🧠 <@user> asks:" prefix and markdown formatting
-    let questionText = questionTextRaw.replace(/^🧠 <@\w+> asks:\n_?\*?/, '').replace(/_?\*?$/, '').trim() || questionTextRaw;
+    // Get question text from round state (or parse as fallback)
+    const questionText = await getQuestionText(client, channelId, threadTs, state);
 
     // Build payload + permalink
     const dmChannelId = await openDmChannel(client, state.op);
@@ -2136,21 +2151,11 @@ app.action('view_answer', async ({ action, ack, body, client }) => {
       return;
     }
 
-    // Get question text from thread root
-    const threadRoot = await client.conversations.history({
-      channel: channelId,
-      latest: threadTs,
-      inclusive: true,
-      limit: 1,
-    });
-
-    const rootMsg = threadRoot.messages?.[0];
-    const questionTextRaw = (rootMsg?.text || '(unknown question)').trim();
-    let questionText = questionTextRaw.replace(/^🧠 <@\w+> asks:\n_?\*?/, '').replace(/_?\*?$/, '').trim() || questionTextRaw;
+    // Get question text from round state (or parse as fallback)
+    const questionText = await getQuestionText(client, channelId, threadTs, roundInfo.state);
 
     // Find the solver from the instruction message
     const instructionMsg = await findInstructionMessage(client, channelId, threadTs);
-    // const solverMention = instructionMsg?.solverId ? `Solved by: <@${instructionMsg.solverId}>\n\n` : '';
 
     // Open modal with answer
     await client.views.open({
@@ -2170,14 +2175,14 @@ app.action('view_answer', async ({ action, ack, body, client }) => {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: `*Question (<@${roundInfo.state.op}>):*\n${questionText}`,
+              text: `*Question (<@${roundInfo.state.op}>):*\n_*${questionText}*_`,
             },
           },
           {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: `*Answer (<@${instructionMsg?.solverId}>):*\n${roundInfo.state.answer}`,
+              text: `*Answer (<@${instructionMsg?.solverId}>):*\n_${roundInfo.state.answer}_`,
             },
           },
         ],
