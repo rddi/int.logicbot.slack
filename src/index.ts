@@ -25,7 +25,7 @@ import {
   addPoints 
 } from './helpers/scoreboard';
 import { openDmChannel, getPermalink, ensureBotIdentity } from './helpers/slack';
-import { buildSolveDmBlocks, updateDmMessageStatus, buildPrivateAnswerDmBlocks } from './helpers/messages';
+import { buildSolveDmBlocks, updateDmMessageStatus, buildPrivateAnswerDmBlocks, sendWinnerSummary } from './helpers/messages';
 
 // Helper functions are now imported from helpers modules above
 
@@ -897,6 +897,11 @@ app.action('confirm_solve', async ({ action, ack, client }) => {
       'Confirmed — round solved and 1 point awarded to <@' + guessAuthorId + '>.',
       'CONFIRMED'
     );
+
+    // Send summary DM to the winner
+    const questionText = await getQuestionText(client, channelId, threadTs, updatedState);
+    const permalink = await getPermalink(client, channelId, threadTs);
+    await sendWinnerSummary(client, guessAuthorId, questionText, data.answerText, permalink, updatedState.op);
   } catch (error) {
     console.error('Error confirming solve:', error);
 
@@ -1171,12 +1176,10 @@ app.action('confirm_private_solve', async ({ action, ack, client }) => {
       'CONFIRMED'
     );
 
-    // DM the submitter
-    const submitterDm = await openDmChannel(client, submitterId);
-    await client.chat.postMessage({
-      channel: submitterDm,
-      text: '✅ Your private answer was accepted — you earned 1 point.',
-    });
+    // Send summary DM to the winner
+    const questionText = await getQuestionText(client, channelId, threadTs, updatedState);
+    const permalink = await getPermalink(client, channelId, threadTs);
+    await sendWinnerSummary(client, submitterId, questionText, data.answerText, permalink, updatedState.op);
   } catch (error) {
     console.error('Error confirming private solve:', error);
 

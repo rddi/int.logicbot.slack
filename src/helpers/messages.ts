@@ -2,6 +2,7 @@
 
 import { QUESTION_REGEX } from '../config';
 import { encodeThreadTs } from './rounds';
+import { openDmChannel } from './slack';
 
 // Create DM solve confirmation blocks
 export function buildSolveDmBlocks(params: {
@@ -142,4 +143,59 @@ export function buildPrivateAnswerDmBlocks(params: {
   }
 
   return blocks;
+}
+
+// Send a summary DM to the winner when a round is solved
+export async function sendWinnerSummary(
+  client: any,
+  winnerId: string,
+  questionText: string,
+  answerText: string,
+  permalink: string | null,
+  op: string
+): Promise<void> {
+  try {
+    const dmChannelId = await openDmChannel(client, winnerId);
+    
+    const blocks: any[] = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `🎉 *Congratulations! You solved the puzzle!*\n\nYou earned 1 point for correctly answering <@${op}>'s question:`,
+        },
+      },
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Question:*\n> "${questionText}"\n\n*Your Answer:*\n> _"${answerText}"_`,
+        },
+      },
+    ];
+
+    // Add "View thread" link button if we have a permalink
+    if (permalink) {
+      blocks.push({
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'View thread' },
+            url: permalink,
+            action_id: 'view_thread_link',
+          },
+        ],
+      } as any);
+    }
+
+    await client.chat.postMessage({
+      channel: dmChannelId,
+      text: `🎉 Congratulations! You solved the puzzle and earned 1 point!\n\nYou correctly answered <@${op}>'s question: "${questionText}"\nYour Answer: "${answerText}"`,
+      blocks,
+    });
+  } catch (error) {
+    console.error('Error sending winner summary DM:', error);
+    // Don't throw - this is a nice-to-have feature
+  }
 }
