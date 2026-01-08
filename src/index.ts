@@ -67,6 +67,36 @@ interface SolvePromptPayload {
   dmMessageTs: string;
 }
 
+// Helper: Resolve user ID from token
+async function resolveUserIdFromToken(client: any, token: string): Promise<string | null> {
+  const t = token.trim();
+
+  // Case 1: Slack mention token: <@U123ABC456> or <@U123ABC456|matt>
+  const mention = t.match(/^<@([A-Z0-9]+)(?:\|[^>]+)?>$/);
+  if (mention) return mention[1];
+
+  // Case 2: Raw ID: U123ABC456
+  if (/^U[A-Z0-9]{8,}$/.test(t)) return t;
+
+  // Case 3: Plain @handle: @matt  -> look up user by name/display_name/real_name
+  const handle = t.startsWith('@') ? t.slice(1) : t;
+  if (!handle) return null;
+
+  // users.list can be large; this is simplest, but you may want caching later
+  const res = await client.users.list();
+  const members = res.members || [];
+
+  const found = members.find((u: any) => {
+    const name = (u.name || '').toLowerCase();
+    const display = (u.profile?.display_name || '').toLowerCase();
+    const real = (u.profile?.real_name || '').toLowerCase();
+    const h = handle.toLowerCase();
+    return name === h || display === h || real === h;
+  });
+
+  return found?.id || null;
+}
+
 // Helper: Check if channel is allowed
 function isAllowedChannel(channelId: string): boolean {
   return ALLOWED_CHANNEL_IDS.includes(channelId);
@@ -579,7 +609,30 @@ if (isAdmin(user_id)) {
       return;
     }
 
-    const targetUserId = match[1];
+    // const targetUserId = match[1];
+
+
+
+    let targetUserId: string | null = null;
+
+    try {
+      targetUserId = await resolveUserIdFromToken(client, match[1]);
+    } catch (error) {
+      console.error('Error resolving user ID:', error);
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Error resolving user ID.',
+      });
+      return;
+    }
+
+    if (!targetUserId) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'User not found.',
+      });
+      return;
+    }
     const points = parseInt(match[2], 10);
 
     try {
@@ -638,7 +691,30 @@ if (isAdmin(user_id)) {
       return;
     }
 
-    const targetUserId = match[1];
+    
+
+    let targetUserId: string | null = null;
+
+    try {
+      targetUserId = await resolveUserIdFromToken(client, match[1]);
+    } catch (error) {
+      console.error('Error resolving user ID:', error);
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Error resolving user ID.',
+      });
+      return;
+    }
+
+    if (!targetUserId) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'User not found.',
+      });
+      return;
+    }
+
+    console.log(targetUserId);
 
     try {
       // Use current year for admin-added points
@@ -680,7 +756,30 @@ if (isAdmin(user_id)) {
       return;
     }
 
-    const targetUserId = match[1];
+    // const targetUserId = match[1];
+
+
+
+    let targetUserId: string | null = null;
+
+    try {
+      targetUserId = await resolveUserIdFromToken(client, match[1]);
+    } catch (error) {
+      console.error('Error resolving user ID:', error);
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Error resolving user ID.',
+      });
+      return;
+    }
+
+    if (!targetUserId) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'User not found.',
+      });
+      return;
+    }
 
     try {
       // Use current year for admin-removed points
