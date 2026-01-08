@@ -51,6 +51,7 @@ interface RoundState {
   status: 'OPEN' | 'SOLVED';
   threadTs: string; // Thread timestamp (root message ts for the round)
   channelId: string;
+  answer?: string; // The accepted answer (only present when SOLVED)
 }
 
 interface ScoreboardData {
@@ -120,30 +121,74 @@ function isAdmin(userId: string): boolean {
   return ADMIN_USER_IDS.includes(userId);
 }
 
+// Helper: Encode threadTs to make it non-human-readable
+function encodeThreadTs(threadTs: string): string {
+  return Buffer.from(threadTs).toString('base64');
+}
+
+// Helper: Decode threadTs
+function decodeThreadTs(encoded: string): string {
+  return Buffer.from(encoded, 'base64').toString('utf-8');
+}
+
+// Helper: Encode round state to make it non-human-readable
+function encodeRoundState(state: RoundState): string {
+  const json = JSON.stringify(state);
+  return Buffer.from(json).toString('base64');
+}
+
+// Helper: Decode round state
+function decodeRoundState(encoded: string): RoundState | null {
+  try {
+    const json = Buffer.from(encoded, 'base64').toString('utf-8');
+    return JSON.parse(json) as RoundState;
+  } catch {
+    return null;
+  }
+}
+
 // Helper: Parse round state from bot message text
 function parseRoundState(text: string): RoundState | null {
   try {
-    // Format: [logic_round v1] op=U123 status=OPEN threadTs=123.456 channelId=C123
+    // Check if it's the new encoded format (base64)
+    // Try to decode as base64 first
+    try {
+      const decoded = decodeRoundState(text);
+      if (decoded) {
+        return decoded;
+      }
+    } catch {
+      // Not base64, try legacy format
+    }
+
+    // Legacy format: [logic_round v1] op=U123 status=OPEN threadTs=123.456 channelId=C123 [answer=...]
     const match = text.match(
-      /\[logic_round v(\d+)\]\s+op=(\w+)\s+status=(\w+)\s+threadTs=([\d.]+)\s+channelId=(\w+)/
+      /\[logic_round v(\d+)\]\s+op=(\w+)\s+status=(\w+)\s+threadTs=([\d.]+)\s+channelId=(\w+)(?:\s+answer=([^\]]+))?/
     );
     if (!match) return null;
 
-    return {
+    const state: RoundState = {
       version: match[1],
       op: match[2],
       status: match[3] as 'OPEN' | 'SOLVED',
       threadTs: match[4],
       channelId: match[5],
     };
+
+    // Parse optional answer field
+    if (match[6]) {
+      state.answer = match[6];
+    }
+
+    return state;
   } catch {
     return null;
   }
 }
 
-// Helper: Format round state to bot message text
+// Helper: Format round state to bot message text (encoded)
 function formatRoundState(state: RoundState): string {
-  return `[logic_round v${state.version}] op=${state.op} status=${state.status} threadTs=${state.threadTs} channelId=${state.channelId}`;
+  return encodeRoundState(state);
 }
 
 // Helper: Get bot user ID / bot ID (cached)
@@ -177,11 +222,8 @@ async function findRoundControlMessage(
         (message.user && message.user === botUserId) ||
         (botId && msgAny.bot_id && msgAny.bot_id === botId);
 
-      if (
-        isFromThisBot &&
-        message.text &&
-        message.text.startsWith('[logic_round')
-      ) {
+      if (isFromThisBot && message.text) {
+        // Try to parse as round state (handles both encoded and legacy formats)
         const state = parseRoundState(message.text);
         if (state) {
           return { ts: message.ts!, state };
@@ -464,6 +506,58 @@ async function updateDmMessageStatus(client: any, dmChannelId: string, dmMessage
       },
     ],
   });
+}
+
+// Helper: Update root message button to show "View answer" after puzzle is solved
+async function updateRootMessageButton(client: any, channelId: string, threadTs: string, answer: string) {
+  try {
+    // Get the root message
+    const rootMessage = await client.conversations.history({
+      channel: channelId,
+      latest: threadTs,
+      inclusive: true,
+      limit: 1,
+    });
+
+    if (!rootMessage.messages || rootMessage.messages.length === 0) {
+      return;
+    }
+
+    const rootMsg = rootMessage.messages[0];
+    const rootText = rootMsg.text || '';
+
+    // Update the message with "View answer" button
+    await client.chat.update({
+      channel: channelId,
+      ts: threadTs,
+      text: rootText,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: rootText,
+          },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'View answer' },
+              action_id: 'view_answer',
+              value: JSON.stringify({
+                channelId: channelId,
+                encodedThreadTs: encodeThreadTs(threadTs),
+              }),
+            },
+          ],
+        },
+      ],
+    });
+  } catch (error) {
+    console.error('Error updating root message button:', error);
+  }
 }
 
 // Helper: Create DM blocks for private answer confirmation (similar to buildSolveDmBlocks but for private answers)
@@ -1011,11 +1105,11 @@ if (isAdmin(user_id)) {
           elements: [
             {
               type: 'button',
-              text: { type: 'plain_text', text: 'Submit answer privately' },
+              text: { type: 'plain_text', text: 'Answer privately' },
               action_id: 'submit_private_answer',
               value: JSON.stringify({
                 channelId: channel_id,
-                threadTs: threadTs,
+                encodedThreadTs: encodeThreadTs(threadTs),
               }),
             },
           ],
@@ -1324,10 +1418,11 @@ app.action('confirm_solve', async ({ action, ack, client }) => {
       return;
     }
 
-    // Update round state to SOLVED
+    // Update round state to SOLVED with answer
     const updatedState: RoundState = {
       ...roundInfo.state,
       status: 'SOLVED',
+      answer: data.answerText,
     };
 
     await client.chat.update({
@@ -1346,6 +1441,11 @@ app.action('confirm_solve', async ({ action, ack, client }) => {
       thread_ts: threadTs,
       text: '✅ Solved. Point goes to <@' + guessAuthorId + '>',
     });
+
+    // Update root message button to show "View answer" instead of "Answer privately"
+    if (updatedState.answer) {
+      await updateRootMessageButton(client, channelId, threadTs, updatedState.answer);
+    }
 
     // Update the DM message in place
     await updateDmMessageStatus(
@@ -1409,7 +1509,12 @@ app.action('submit_private_answer', async ({ action, ack, body, client }) => {
 
   try {
     const buttonData = JSON.parse((action as any).value);
-    const { channelId, threadTs } = buttonData;
+    const { channelId, encodedThreadTs } = buttonData;
+
+    if (!encodedThreadTs) {
+      console.error('Missing encodedThreadTs in button data');
+      return;
+    }
 
     // Open modal for private answer submission
     await client.views.open({
@@ -1431,7 +1536,7 @@ app.action('submit_private_answer', async ({ action, ack, body, client }) => {
         },
         private_metadata: JSON.stringify({
           channelId,
-          threadTs,
+          encodedThreadTs: encodedThreadTs,
           submitterId: (body as any).user.id,
         }),
         blocks: [
@@ -1466,7 +1571,8 @@ app.view('private_answer_modal', async ({ ack, view, client }) => {
 
   try {
     const metadata = JSON.parse(view.private_metadata);
-    const { channelId, threadTs, submitterId } = metadata;
+    const { channelId, encodedThreadTs, submitterId } = metadata;
+    const threadTs = decodeThreadTs(encodedThreadTs);
 
     // Get the answer from the modal
     const answerBlock = view.state.values.answer_input;
@@ -1590,10 +1696,11 @@ app.action('confirm_private_solve', async ({ action, ack, client }) => {
       return;
     }
 
-    // Update round state to SOLVED
+    // Update round state to SOLVED with answer
     const updatedState: RoundState = {
       ...roundInfo.state,
       status: 'SOLVED',
+      answer: data.answerText,
     };
 
     await client.chat.update({
@@ -1612,6 +1719,11 @@ app.action('confirm_private_solve', async ({ action, ack, client }) => {
       thread_ts: threadTs,
       text: '✅ Solved via private answer. Point goes to <@' + submitterId + '>',
     });
+
+    // Update root message button to show "View answer" instead of "Answer privately"
+    if (updatedState.answer) {
+      await updateRootMessageButton(client, channelId, threadTs, updatedState.answer);
+    }
 
     // Update the OP DM message in place
     await updateDmMessageStatus(
@@ -1678,6 +1790,94 @@ app.action('cancel_private_solve', async ({ action, ack, client }) => {
     });
   } catch (error) {
     console.error('Error cancelling private solve:', error);
+  }
+});
+
+// View answer: Button handler to show answer in modal
+app.action('view_answer', async ({ action, ack, body, client }) => {
+  await ack();
+
+  if (action.type !== 'button') return;
+
+  try {
+    const buttonData = JSON.parse((action as any).value);
+    const { channelId, encodedThreadTs } = buttonData;
+    const threadTs = decodeThreadTs(encodedThreadTs);
+
+    // Find the round to get the answer
+    const roundInfo = await findRoundControlMessage(channelId, threadTs);
+    if (!roundInfo || !roundInfo.state.answer) {
+      await client.views.open({
+        trigger_id: (body as any).trigger_id,
+        view: {
+          type: 'modal',
+          title: {
+            type: 'plain_text',
+            text: 'View answer',
+          },
+          close: {
+            type: 'plain_text',
+            text: 'Close',
+          },
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: 'Answer not found. This puzzle may not have been solved yet.',
+              },
+            },
+          ],
+        },
+      });
+      return;
+    }
+
+    // Get question text from thread root
+    const threadRoot = await client.conversations.history({
+      channel: channelId,
+      latest: threadTs,
+      inclusive: true,
+      limit: 1,
+    });
+
+    const rootMsg = threadRoot.messages?.[0];
+    const questionTextRaw = (rootMsg?.text || '(unknown question)').trim();
+    let questionText = questionTextRaw.replace(/^🧠 <@\w+> asks:\n_?\*?/, '').replace(/_?\*?$/, '').trim() || questionTextRaw;
+
+    // Open modal with answer
+    await client.views.open({
+      trigger_id: (body as any).trigger_id,
+      view: {
+        type: 'modal',
+        title: {
+          type: 'plain_text',
+          text: 'View answer',
+        },
+        close: {
+          type: 'plain_text',
+          text: 'Close',
+        },
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `*Question:*\n${questionText}`,
+            },
+          },
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: `*Answer:*\n${roundInfo.state.answer}`,
+            },
+          },
+        ],
+      },
+    });
+  } catch (error) {
+    console.error('Error viewing answer:', error);
   }
 });
 
