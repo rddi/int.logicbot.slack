@@ -42,6 +42,8 @@ const app = new App({
 let BOT_USER_ID: string | null = null;
 let BOT_ID: string | null = null;
 
+const regex = /\s*?:brain: (.+) asks:\n/;
+
 // Types
 interface RoundState {
   version: string;
@@ -341,8 +343,14 @@ async function addPoints(
       if (!data.scoresByYear[year]) {
         data.scoresByYear[year] = {};
       }
-      data.scoresByYear[year][userId] = (data.scoresByYear[year][userId] || 0) + points;
-      if (data.scoresByYear[year][userId] < 0) data.scoresByYear[year][userId] = 0;
+      const newScore = (data.scoresByYear[year][userId] || 0) + points;
+      
+      // Validate: scores cannot be negative
+      if (newScore < 0) {
+        throw new Error(`Cannot set score to negative value. Result would be ${newScore}.`);
+      }
+      
+      data.scoresByYear[year][userId] = newScore;
     }
 
     return data;
@@ -468,6 +476,8 @@ function buildPrivateAnswerDmBlocks(params: {
 }) {
   const { submitterId, questionText, answerText, permalink, payloadValue } = params;
 
+  const strippedQuestionText = questionText.replace(regex, '').trim() || questionText;
+
   const blocks: any[] = [
     {
       type: 'section',
@@ -475,7 +485,7 @@ function buildPrivateAnswerDmBlocks(params: {
         type: 'mrkdwn',
         text:
           `Has <@${submitterId}> solved your question:\n\n` +
-          `> "${questionText}"\n\n` +
+          `> "${strippedQuestionText}"\n\n` +
           `with their private answer:\n\n` +
           `> _"${answerText}"_`,
       },
@@ -547,9 +557,9 @@ app.command('/logic', async ({ command, ack, respond, client }) => {
 let section2 = '';
 if (isAdmin(user_id)) {
   section2 = `\n\n*Admin Commands:*
-\`/logic setscore @user 10\` - Set a user's score
-\`/logic addpoint @user\` - Add 1 point to a user
-\`/logic removepoint @user\` - Remove 1 point from a user`;
+\`/logic setscore @user <points> [year]\` - Set a user's score (year defaults to current year)
+\`/logic addpoint @user [year]\` - Add 1 point to a user (year defaults to current year)
+\`/logic removepoint @user [year]\` - Remove 1 point from a user (year defaults to current year)`;
 }
 
   const section3 = `\n\n*How it works:*
@@ -628,27 +638,68 @@ if (isAdmin(user_id)) {
       let targetUserId = user_id;
 
       // Check if @user was mentioned (use rawText, not lowercased)
-      const mentionMatch = rawText.match(/stats\s+<@(\w+)>/i);
+      // Accept user in format: <@U123>, @U123, @username, or username
+      const mentionMatch = rawText.match(/stats\s+(\S+)/i);
       if (mentionMatch) {
-        targetUserId = mentionMatch[1];
+        try {
+          const resolvedUserId = await resolveUserIdFromToken(client, mentionMatch[1]);
+          if (resolvedUserId) {
+            targetUserId = resolvedUserId;
+          } else {
+            await respond({
+              response_type: 'ephemeral',
+              text: 'User not found.',
+            });
+            return;
+          }
+        } catch (error) {
+          console.error('Error resolving user ID:', error);
+          await respond({
+            response_type: 'ephemeral',
+            text: 'Error resolving user ID.',
+          });
+          return;
+        }
       }
 
       const data = await getScoreboardData(channel_id);
       
-      // Calculate total score across all years
+      // Calculate scores by year and total
       let totalScore = 0;
+      const scoresByYear: Array<{ year: string; score: number }> = [];
+      
       if (data.scoresByYear) {
-        for (const yearScores of Object.values(data.scoresByYear)) {
-          totalScore += yearScores[targetUserId] || 0;
+        // Get all years and sort them (newest first)
+        const years = Object.keys(data.scoresByYear).sort((a, b) => parseInt(b) - parseInt(a));
+        
+        for (const year of years) {
+          const yearScore = data.scoresByYear[year][targetUserId] || 0;
+          if (yearScore > 0) {
+            scoresByYear.push({ year, score: yearScore });
+            totalScore += yearScore;
+          }
         }
       }
 
       const userInfo = await client.users.info({ user: targetUserId });
       const displayName = userInfo.user?.real_name || userInfo.user?.name || targetUserId;
 
+      // Build stats text
+      let statsText = `*Stats for ${displayName}:*\n\n`;
+      
+      if (scoresByYear.length === 0) {
+        statsText += 'No points yet.';
+      } else {
+        // Show scores by year
+        for (const { year, score } of scoresByYear) {
+          statsText += `${year}: ${score} point${score !== 1 ? 's' : ''}\n`;
+        }
+        statsText += `\n*Total: ${totalScore} point${totalScore !== 1 ? 's' : ''}*`;
+      }
+
       await respond({
         response_type: 'ephemeral',
-        text: `*Stats for ${displayName}:*\n${totalScore} point${totalScore !== 1 ? 's' : ''}`,
+        text: statsText,
       });
     } catch (error) {
       console.error('Error showing stats:', error);
@@ -671,11 +722,12 @@ if (isAdmin(user_id)) {
     }
 
     // Use rawText to preserve mention formatting, but allow uppercase/lowercase command
-    const match = rawText.match(/setscore\s+<@(\w+)>\s+(\d+)/i);
+    // Accept optional year: setscore @user <points> [year]
+    const match = rawText.match(/setscore\s+(\S+)\s+(\d+)(?:\s+(\d{4}))?/i);
     if (!match) {
       await respond({
         response_type: 'ephemeral',
-        text: 'Usage: /logic setscore @user <points>',
+        text: 'Usage: /logic setscore @user <points> [year]',
       });
       return;
     }
@@ -705,24 +757,30 @@ if (isAdmin(user_id)) {
       return;
     }
     const points = parseInt(match[2], 10);
+    // Parse optional year, default to current year if not provided
+    const year = match[3] || new Date().getFullYear().toString();
+
+    // Validate: scores cannot be negative
+    if (points < 0) {
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Error: Scores cannot be negative. Please use a value of 0 or greater.',
+      });
+      return;
+    }
 
     try {
-      // Use current year for admin-set scores
-      const currentYear = new Date().getFullYear().toString();
       await updateScoreboard(channel_id, (data) => {
         // Initialize scoresByYear if it doesn't exist
         if (!data.scoresByYear) {
           data.scoresByYear = {};
         }
-        if (!data.scoresByYear[currentYear]) {
-          data.scoresByYear[currentYear] = {};
+        if (!data.scoresByYear[year]) {
+          data.scoresByYear[year] = {};
         }
 
         // Set year-based score
-        data.scoresByYear[currentYear][targetUserId] = points;
-        if (data.scoresByYear[currentYear][targetUserId] < 0) {
-          data.scoresByYear[currentYear][targetUserId] = 0;
-        }
+        data.scoresByYear[year][targetUserId] = points;
 
         return data;
       });
@@ -732,7 +790,7 @@ if (isAdmin(user_id)) {
 
       await respond({
         response_type: 'ephemeral',
-        text: `Set ${displayName}'s score to ${points} points.`,
+        text: `Set ${displayName}'s score to ${points} points${year !== new Date().getFullYear().toString() ? ` for year ${year}` : ''}.`,
       });
     } catch (error) {
       console.error('Error setting score:', error);
@@ -753,11 +811,12 @@ if (isAdmin(user_id)) {
       return;
     }
 
-    const match = rawText.match(/addpoint\s+@(\w+)/i);
+    // Accept optional year: addpoint @user [year]
+    const match = rawText.match(/addpoint\s+(\S+)(?:\s+(\d{4}))?/i);
     if (!match) {
       await respond({
         response_type: 'ephemeral',
-        text: 'Usage: /logic addpoint @user, received: ' + rawText,
+        text: 'Usage: /logic addpoint @user [year]',
       });
       return;
     }
@@ -785,19 +844,18 @@ if (isAdmin(user_id)) {
       return;
     }
 
-    console.log(targetUserId);
+    // Parse optional year, default to current year if not provided
+    const year = match[2] || new Date().getFullYear().toString();
 
     try {
-      // Use current year for admin-added points
-      const currentYear = new Date().getFullYear().toString();
-      await addPoints(channel_id, targetUserId, 1, currentYear);
+      await addPoints(channel_id, targetUserId, 1, year);
 
       const userInfo = await client.users.info({ user: targetUserId });
       const displayName = userInfo.user?.real_name || userInfo.user?.name || targetUserId;
 
       await respond({
         response_type: 'ephemeral',
-        text: `Added 1 point to ${displayName}.`,
+        text: `Added 1 point to ${displayName}${year !== new Date().getFullYear().toString() ? ` for year ${year}` : ''}.`,
       });
     } catch (error) {
       console.error('Error adding point:', error);
@@ -818,11 +876,12 @@ if (isAdmin(user_id)) {
       return;
     }
 
-    const match = rawText.match(/removepoint\s+<@(\w+)>/i);
+    // Accept optional year: removepoint @user [year]
+    const match = rawText.match(/removepoint\s+(\S+)(?:\s+(\d{4}))?/i);
     if (!match) {
       await respond({
         response_type: 'ephemeral',
-        text: 'Usage: /logic removepoint @user',
+        text: 'Usage: /logic removepoint @user [year]',
       });
       return;
     }
@@ -852,17 +911,32 @@ if (isAdmin(user_id)) {
       return;
     }
 
+    // Parse optional year, default to current year if not provided
+    const year = match[2] || new Date().getFullYear().toString();
+
+    // Check if removing a point would result in negative score
     try {
-      // Use current year for admin-removed points
-      const currentYear = new Date().getFullYear().toString();
-      await addPoints(channel_id, targetUserId, -1, currentYear);
+      const currentData = await getScoreboardData(channel_id);
+      const currentScore = currentData.scoresByYear[year]?.[targetUserId] || 0;
+      
+      if (currentScore - 1 < 0) {
+        const userInfo = await client.users.info({ user: targetUserId });
+        const displayName = userInfo.user?.real_name || userInfo.user?.name || targetUserId;
+        await respond({
+          response_type: 'ephemeral',
+          text: `Error: Cannot remove point. ${displayName} has ${currentScore} point${currentScore !== 1 ? 's' : ''}${year !== new Date().getFullYear().toString() ? ` for year ${year}` : ''}. Scores cannot be negative.`,
+        });
+        return;
+      }
+
+      await addPoints(channel_id, targetUserId, -1, year);
 
       const userInfo = await client.users.info({ user: targetUserId });
       const displayName = userInfo.user?.real_name || userInfo.user?.name || targetUserId;
 
       await respond({
         response_type: 'ephemeral',
-        text: `Removed 1 point from ${displayName}.`,
+        text: `Removed 1 point from ${displayName}${year !== new Date().getFullYear().toString() ? ` for year ${year}` : ''}.`,
       });
     } catch (error) {
       console.error('Error removing point:', error);
@@ -901,7 +975,7 @@ if (isAdmin(user_id)) {
           elements: [
             {
               type: 'button',
-              text: { type: 'plain_text', text: 'Submit answer privately' },
+              text: { type: 'plain_text', text: 'Answer privately' },
               action_id: 'submit_private_answer',
               value: JSON.stringify({
                 channelId: channel_id,
@@ -1127,7 +1201,7 @@ app.event('reaction_added', async ({ event, client }) => {
 
     const rootMsg = threadRoot.messages?.[0];
     const questionTextRaw = (rootMsg?.text || '(unknown question)').trim();
-    const regex = /\s*?:brain: (.+) asks:\n/;
+    
     const questionText = questionTextRaw.replace(regex, '').trim() || questionTextRaw;
     console.log('questionTextRaw', questionTextRaw);
     console.log('questionText', questionText);
@@ -1536,7 +1610,7 @@ app.action('confirm_private_solve', async ({ action, ack, client }) => {
     await client.chat.postMessage({
       channel: channelId,
       thread_ts: threadTs,
-      text: '✅ Solved. Point goes to <@' + submitterId + '>',
+      text: '✅ Solved via private answer. Point goes to <@' + submitterId + '>',
     });
 
     // Update the OP DM message in place
@@ -1544,7 +1618,7 @@ app.action('confirm_private_solve', async ({ action, ack, client }) => {
       client,
       dmChannelId,
       dmMessageTs,
-      'Confirmed — round solved and 1 point awarded.',
+      'Confirmed — round solved and 1 point awarded to <@' + submitterId + '>.',
       'CONFIRMED'
     );
 
