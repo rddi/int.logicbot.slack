@@ -1320,6 +1320,16 @@ if (isAdmin(user_id)) {
             },
             {
               type: 'button',
+              text: { type: 'plain_text', text: 'Edit question' },
+              action_id: 'edit_question',
+              value: JSON.stringify({
+                channelId: channel_id,
+                encodedThreadTs: encodeThreadTs(threadTs),
+                op: user_id,
+              }),
+            },
+            {
+              type: 'button',
               text: { type: 'plain_text', text: 'Close round' },
               action_id: 'close_round',
               style: 'danger',
@@ -1365,8 +1375,8 @@ if (isAdmin(user_id)) {
       channel: channel_id,
       thread_ts: threadTs,
       text:
-        `Round OPEN - OP: <@${user_id}>\n` +
-        `Reply in this thread with guesses.\n` +
+        `Round *OPEN* - OP: <@${user_id}>\n` +
+        `Reply in this thread with guesses. Or privately using the button above.\n` +
         `OP reacts with :yes: on the correct guess to solve (you’ll be asked to confirm).`,
     });
 
@@ -1995,6 +2005,413 @@ app.action('cancel_private_solve', async ({ action, ack, client }) => {
     });
   } catch (error) {
     console.error('Error cancelling private solve:', error);
+  }
+});
+
+// Edit question: Button handler (OP only)
+app.action('edit_question', async ({ action, ack, body, client }) => {
+  await ack();
+
+  if (action.type !== 'button') return;
+
+  const userId = (body as any).user.id;
+
+  try {
+    const buttonData = JSON.parse((action as any).value);
+    const { channelId, encodedThreadTs, op: expectedOp } = buttonData;
+    
+    if (!encodedThreadTs) {
+      console.error('Missing encodedThreadTs in button data');
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: 'Error: Missing thread information.',
+      });
+      return;
+    }
+    
+    const threadTs = decodeThreadTs(encodedThreadTs);
+
+    // Check if user is the OP
+    if (userId !== expectedOp) {
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: 'Only the OP can edit the question.',
+      });
+      return;
+    }
+
+    // Find the round
+    const roundInfo = await findRoundControlMessage(channelId, threadTs);
+    if (!roundInfo) {
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: 'Round not found.',
+      });
+      return;
+    }
+
+    // Check if already closed or solved
+    if (roundInfo.state.status === RoundStatus.CLOSED) {
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: 'Cannot edit a closed round.',
+      });
+      return;
+    }
+
+    if (roundInfo.state.status === RoundStatus.SOLVED) {
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: 'Cannot edit a solved round.',
+      });
+      return;
+    }
+
+    // Get current question text
+    const currentQuestion = await getQuestionText(client, channelId, threadTs, roundInfo.state);
+
+    // Open modal for editing question
+    await client.views.open({
+      trigger_id: (body as any).trigger_id,
+      view: {
+        type: 'modal',
+        callback_id: 'edit_question_modal',
+        title: {
+          type: 'plain_text',
+          text: 'Edit question',
+        },
+        submit: {
+          type: 'plain_text',
+          text: 'Update',
+        },
+        close: {
+          type: 'plain_text',
+          text: 'Cancel',
+        },
+        private_metadata: JSON.stringify({
+          channelId,
+          encodedThreadTs,
+          op: userId,
+        }),
+        blocks: [
+          {
+            type: 'input',
+            block_id: 'question_input',
+            element: {
+              type: 'plain_text_input',
+              action_id: 'question',
+              multiline: true,
+              initial_value: currentQuestion,
+              placeholder: {
+                type: 'plain_text',
+                text: 'Enter the question...',
+              },
+            },
+            label: {
+              type: 'plain_text',
+              text: 'Question',
+            },
+          },
+        ],
+      },
+    });
+  } catch (error) {
+    console.error('Error opening edit question modal:', error);
+    try {
+      const buttonData = JSON.parse((action as any).value);
+      const channelId = buttonData?.channelId || (body as any).channel?.id;
+      if (channelId) {
+        await client.chat.postEphemeral({
+          channel: channelId,
+          user: userId,
+          text: 'Error opening edit question modal.',
+        });
+      }
+    } catch (err) {
+      console.error('Failed to send error message:', err);
+    }
+  }
+});
+
+// Edit question: Modal submit handler
+app.view('edit_question_modal', async ({ ack, view, client, body }) => {
+  await ack();
+
+  try {
+    const metadata = JSON.parse(view.private_metadata);
+    const { channelId, encodedThreadTs, op } = metadata;
+    const threadTs = decodeThreadTs(encodedThreadTs);
+    const userId = (body as any).user.id;
+
+    // Verify user is the OP
+    if (userId !== op) {
+      await client.views.update({
+        view_id: view.id,
+        view: {
+          type: 'modal',
+          title: {
+            type: 'plain_text',
+            text: 'Error',
+          },
+          close: {
+            type: 'plain_text',
+            text: 'Close',
+          },
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: '❌ Only the OP can edit the question.',
+              },
+            },
+          ],
+        },
+      });
+      return;
+    }
+
+    // Get the new question from the modal
+    const questionBlock = view.state.values.question_input;
+    const newQuestion = (questionBlock?.question?.value || '').trim();
+
+    if (!newQuestion) {
+      // Question is empty, show error
+      await client.views.update({
+        view_id: view.id,
+        view: {
+          type: 'modal',
+          callback_id: 'edit_question_modal',
+          title: {
+            type: 'plain_text',
+            text: 'Edit question',
+          },
+          submit: {
+            type: 'plain_text',
+            text: 'Update',
+          },
+          close: {
+            type: 'plain_text',
+            text: 'Cancel',
+          },
+          private_metadata: view.private_metadata,
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: '❌ Question cannot be empty.',
+              },
+            },
+            {
+              type: 'input',
+              block_id: 'question_input',
+              element: {
+                type: 'plain_text_input',
+                action_id: 'question',
+                multiline: true,
+                placeholder: {
+                  type: 'plain_text',
+                  text: 'Enter the question...',
+                },
+              },
+              label: {
+                type: 'plain_text',
+                text: 'Question',
+              },
+            },
+          ],
+        },
+      });
+      return;
+    }
+
+    // Find the round
+    const roundInfo = await findRoundControlMessage(channelId, threadTs);
+    if (!roundInfo) {
+      await client.views.update({
+        view_id: view.id,
+        view: {
+          type: 'modal',
+          title: {
+            type: 'plain_text',
+            text: 'Error',
+          },
+          close: {
+            type: 'plain_text',
+            text: 'Close',
+          },
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: '❌ Round not found.',
+              },
+            },
+          ],
+        },
+      });
+      return;
+    }
+
+    // Check if already closed or solved
+    if (roundInfo.state.status === RoundStatus.CLOSED || roundInfo.state.status === RoundStatus.SOLVED) {
+      const statusText = roundInfo.state.status === RoundStatus.CLOSED ? 'closed' : 'solved';
+      await client.views.update({
+        view_id: view.id,
+        view: {
+          type: 'modal',
+          title: {
+            type: 'plain_text',
+            text: 'Error',
+          },
+          close: {
+            type: 'plain_text',
+            text: 'Close',
+          },
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: `❌ Cannot edit a ${statusText} round.`,
+              },
+            },
+          ],
+        },
+      });
+      return;
+    }
+
+    // Update round state with new question
+    const updatedState: RoundState = {
+      ...roundInfo.state,
+      question: newQuestion,
+    };
+
+    await client.chat.update({
+      channel: channelId,
+      ts: roundInfo.ts,
+      text: formatRoundState(updatedState),
+    });
+
+    // Update root message with new question
+    await client.chat.update({
+      channel: channelId,
+      ts: threadTs,
+      text: `🧠 <@${op}> asks:\n_*${newQuestion}*_`,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `🧠 <@${op}> asks:\n_*${newQuestion}*_`,
+          },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Answer privately' },
+              action_id: 'submit_private_answer',
+              value: JSON.stringify({
+                channelId: channelId,
+                encodedThreadTs: encodeThreadTs(threadTs),
+              }),
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Edit question' },
+              action_id: 'edit_question',
+              value: JSON.stringify({
+                channelId: channelId,
+                encodedThreadTs: encodeThreadTs(threadTs),
+                op: op,
+              }),
+            },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Close round' },
+              action_id: 'close_round',
+              style: 'danger',
+              value: JSON.stringify({
+                channelId: channelId,
+                encodedThreadTs: encodeThreadTs(threadTs),
+                op: op,
+              }),
+            },
+          ],
+        },
+      ],
+    });
+
+    // Post message in thread to notify of edit
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: '📝 Question updated by OP.',
+    });
+
+    // Close the modal with success message
+    await client.views.update({
+      view_id: view.id,
+      view: {
+        type: 'modal',
+        title: {
+          type: 'plain_text',
+          text: 'Success',
+        },
+        close: {
+          type: 'plain_text',
+          text: 'Close',
+        },
+        blocks: [
+          {
+            type: 'section',
+            text: {
+              type: 'mrkdwn',
+              text: '✅ Question updated successfully!',
+            },
+          },
+        ],
+      },
+    });
+  } catch (error) {
+    console.error('Error updating question:', error);
+    try {
+      await client.views.update({
+        view_id: view.id,
+        view: {
+          type: 'modal',
+          title: {
+            type: 'plain_text',
+            text: 'Error',
+          },
+          close: {
+            type: 'plain_text',
+            text: 'Close',
+          },
+          blocks: [
+            {
+              type: 'section',
+              text: {
+                type: 'mrkdwn',
+                text: '❌ Error updating question.',
+              },
+            },
+          ],
+        },
+      });
+    } catch (err) {
+      console.error('Failed to update modal with error:', err);
+    }
   }
 });
 
