@@ -22,7 +22,9 @@ import {
   getScoreboardData, 
   updateScoreboard, 
   getYearFromTimestamp, 
-  addPoints 
+  addPoints,
+  addQuestion,
+  removeQuestion
 } from './helpers/scoreboard';
 import { openDmChannel, getPermalink, ensureBotIdentity } from './helpers/slack';
 import { buildSolveDmBlocks, updateDmMessageStatus, buildPrivateAnswerDmBlocks, sendWinnerSummary } from './helpers/messages';
@@ -88,35 +90,57 @@ if (isAdmin(user_id)) {
       await getOrCreateScoreboard(channel_id);
       const data = await getScoreboardData(channel_id);
 
-      // Ensure scoresByYear exists
+      // Ensure scoresByYear and questionsByYear exist
       if (!data.scoresByYear) {
         data.scoresByYear = {};
       }
+      if (!data.questionsByYear) {
+        data.questionsByYear = {};
+      }
 
-      // Get all years and sort them (newest first)
-      const years = Object.keys(data.scoresByYear).sort((a, b) => parseInt(b) - parseInt(a));
+      // Get all years from both scores and questions, sort them (newest first)
+      const allYears = new Set([
+        ...Object.keys(data.scoresByYear),
+        ...Object.keys(data.questionsByYear)
+      ]);
+      const years = Array.from(allYears).sort((a, b) => parseInt(b) - parseInt(a));
 
       let scoreboardText = '*Scoreboard*\n\n';
 
       if (years.length === 0) {
         scoreboardText += 'No scores yet.';
       } else {
-        // Display scores by year
+        // Display scores and questions by year
         for (const year of years) {
-          const yearScores = data.scoresByYear[year];
-          if (!yearScores || Object.keys(yearScores).length === 0) continue;
+          const yearScores = data.scoresByYear[year] || {};
+          const yearQuestions = data.questionsByYear[year] || {};
+          
+          // Get all users who have scores or questions in this year
+          const allUsers = new Set([
+            ...Object.keys(yearScores),
+            ...Object.keys(yearQuestions)
+          ]);
+
+          if (allUsers.size === 0) continue;
 
           scoreboardText += `*${year}*\n`;
-          const entries = Object.entries(yearScores)
-            .sort(([, a], [, b]) => b - a);
+          
+          // Combine scores and questions, then sort by score (descending)
+          const entries = Array.from(allUsers).map(userId => ({
+            userId,
+            score: yearScores[userId] || 0,
+            questions: yearQuestions[userId] || 0
+          })).sort((a, b) => b.score - a.score);
 
-          for (const [userId, score] of entries) {
+          for (const { userId, score, questions } of entries) {
             try {
               const userInfo = await client.users.info({ user: userId });
               const displayName = userInfo.user?.real_name || userInfo.user?.name || userId;
-              scoreboardText += `  ${displayName}: ${score}\n`;
+              const questionText = questions > 0 ? ` (${questions} question${questions !== 1 ? 's' : ''})` : '';
+              scoreboardText += `  ${displayName}: ${score} point${score !== 1 ? 's' : ''}${questionText}\n`;
             } catch {
-              scoreboardText += `  <@${userId}>: ${score}\n`;
+              const questionText = questions > 0 ? ` (${questions} question${questions !== 1 ? 's' : ''})` : '';
+              scoreboardText += `  <@${userId}>: ${score} point${score !== 1 ? 's' : ''}${questionText}\n`;
             }
           }
           scoreboardText += '\n';
@@ -168,20 +192,31 @@ if (isAdmin(user_id)) {
 
       const data = await getScoreboardData(channel_id);
       
-      // Calculate scores by year and total
-      let totalScore = 0;
-      const scoresByYear: Array<{ year: string; score: number }> = [];
+      // Ensure questionsByYear exists
+      if (!data.questionsByYear) {
+        data.questionsByYear = {};
+      }
       
-      if (data.scoresByYear) {
-        // Get all years and sort them (newest first)
-        const years = Object.keys(data.scoresByYear).sort((a, b) => parseInt(b) - parseInt(a));
+      // Calculate scores and questions by year and totals
+      let totalScore = 0;
+      let totalQuestions = 0;
+      const statsByYear: Array<{ year: string; score: number; questions: number }> = [];
+      
+      // Get all years from both scores and questions
+      const allYears = new Set([
+        ...(data.scoresByYear ? Object.keys(data.scoresByYear) : []),
+        ...(data.questionsByYear ? Object.keys(data.questionsByYear) : [])
+      ]);
+      const years = Array.from(allYears).sort((a, b) => parseInt(b) - parseInt(a));
+      
+      for (const year of years) {
+        const yearScore = (data.scoresByYear?.[year]?.[targetUserId] || 0);
+        const yearQuestions = (data.questionsByYear?.[year]?.[targetUserId] || 0);
         
-        for (const year of years) {
-          const yearScore = data.scoresByYear[year][targetUserId] || 0;
-          if (yearScore > 0) {
-            scoresByYear.push({ year, score: yearScore });
-            totalScore += yearScore;
-          }
+        if (yearScore > 0 || yearQuestions > 0) {
+          statsByYear.push({ year, score: yearScore, questions: yearQuestions });
+          totalScore += yearScore;
+          totalQuestions += yearQuestions;
         }
       }
 
@@ -191,14 +226,29 @@ if (isAdmin(user_id)) {
       // Build stats text
       let statsText = `*Stats for ${displayName}:*\n\n`;
       
-      if (scoresByYear.length === 0) {
-        statsText += 'No points yet.';
+      if (statsByYear.length === 0) {
+        statsText += 'No points or questions yet.';
       } else {
-        // Show scores by year
-        for (const { year, score } of scoresByYear) {
-          statsText += `${year}: ${score} point${score !== 1 ? 's' : ''}\n`;
+        // Show scores and questions by year
+        for (const { year, score, questions } of statsByYear) {
+          const parts: string[] = [];
+          if (score > 0) {
+            parts.push(`${score} point${score !== 1 ? 's' : ''}`);
+          }
+          if (questions > 0) {
+            parts.push(`${questions} question${questions !== 1 ? 's' : ''}`);
+          }
+          statsText += `${year}: ${parts.join(', ')}\n`;
         }
-        statsText += `\n*Total: ${totalScore} point${totalScore !== 1 ? 's' : ''}*`;
+        
+        const totalParts: string[] = [];
+        if (totalScore > 0) {
+          totalParts.push(`${totalScore} point${totalScore !== 1 ? 's' : ''}`);
+        }
+        if (totalQuestions > 0) {
+          totalParts.push(`${totalQuestions} question${totalQuestions !== 1 ? 's' : ''}`);
+        }
+        statsText += `\n*Total: ${totalParts.join(', ')}*`;
       }
 
       await respond({
@@ -601,6 +651,10 @@ if (isAdmin(user_id)) {
         `OP reacts with :yes: on the correct guess to solve (you'll be asked to confirm).\n\n` +
         `💡 _Tip: If your question includes images, you can post them directly in this thread._`,
     });
+
+    // Track question count for the OP
+    const year = getYearFromTimestamp(threadTs);
+    await addQuestion(channel_id, user_id, year);
 
     await respond({
       response_type: 'ephemeral',
@@ -1646,6 +1700,12 @@ app.action('close_round', async ({ action, ack, body, client }) => {
     }
 
     const roundInfo = validation.roundInfo!;
+
+    // If round is OPEN (not SOLVED), remove question count from OP
+    if (roundInfo.state.status === RoundStatus.OPEN) {
+      const year = getYearFromTimestamp(threadTs);
+      await removeQuestion(channelId, roundInfo.state.op, year);
+    }
 
     // Update round state to CLOSED
     const updatedState: RoundState = {

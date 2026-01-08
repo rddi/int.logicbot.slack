@@ -18,6 +18,7 @@ export interface RoundState {
 
 export interface ScoreboardData {
   scoresByYear: Record<string, Record<string, number>>; // year -> userId -> score
+  questionsByYear: Record<string, Record<string, number>>; // year -> userId -> question count
   lastUpdated: string; // ISO timestamp
 }
 

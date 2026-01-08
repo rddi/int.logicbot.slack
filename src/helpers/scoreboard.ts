@@ -36,6 +36,7 @@ export async function getOrCreateScoreboard(channelId: string): Promise<string> 
 
     const scoreboardData: ScoreboardData = {
       scoresByYear: {},
+      questionsByYear: {},
       lastUpdated: new Date().toISOString(),
     };
 
@@ -71,7 +72,7 @@ export async function getScoreboardData(channelId: string): Promise<ScoreboardDa
     });
 
     if (!result.messages || result.messages.length === 0) {
-      return { scoresByYear: {}, lastUpdated: new Date().toISOString() };
+      return { scoresByYear: {}, questionsByYear: {}, lastUpdated: new Date().toISOString() };
     }
 
     const message = result.messages[0];
@@ -90,17 +91,21 @@ export async function getScoreboardData(channelId: string): Promise<ScoreboardDa
       if (!parsed.scoresByYear) {
         parsed.scoresByYear = {};
       }
+      // Ensure questionsByYear exists for backward compatibility
+      if (!parsed.questionsByYear) {
+        parsed.questionsByYear = {};
+      }
       // Remove legacy scores field if it exists
       if (parsed.scores) {
         delete parsed.scores;
       }
       return parsed;
     } catch {
-      return { scoresByYear: {}, lastUpdated: new Date().toISOString() };
+      return { scoresByYear: {}, questionsByYear: {}, lastUpdated: new Date().toISOString() };
     }
   } catch (error) {
     console.error('Error getting scoreboard data:', error);
-    return { scoresByYear: {}, lastUpdated: new Date().toISOString() };
+    return { scoresByYear: {}, questionsByYear: {}, lastUpdated: new Date().toISOString() };
   }
 }
 
@@ -159,6 +164,58 @@ export async function addPoints(
       }
       
       data.scoresByYear[year][userId] = newScore;
+    }
+
+    return data;
+  });
+}
+
+// Add a question count to a user (with year tracking)
+export async function addQuestion(
+  channelId: string,
+  userId: string,
+  year: string
+): Promise<void> {
+  await updateScoreboard(channelId, (data) => {
+    // Initialize questionsByYear if it doesn't exist
+    if (!data.questionsByYear) {
+      data.questionsByYear = {};
+    }
+
+    if (!data.questionsByYear[year]) {
+      data.questionsByYear[year] = {};
+    }
+    
+    data.questionsByYear[year][userId] = (data.questionsByYear[year][userId] || 0) + 1;
+
+    return data;
+  });
+}
+
+// Remove a question count from a user (with year tracking)
+export async function removeQuestion(
+  channelId: string,
+  userId: string,
+  year: string
+): Promise<void> {
+  await updateScoreboard(channelId, (data) => {
+    // Initialize questionsByYear if it doesn't exist
+    if (!data.questionsByYear) {
+      data.questionsByYear = {};
+    }
+
+    if (!data.questionsByYear[year]) {
+      data.questionsByYear[year] = {};
+    }
+    
+    const currentCount = data.questionsByYear[year][userId] || 0;
+    const newCount = Math.max(0, currentCount - 1); // Ensure it doesn't go below 0
+    
+    if (newCount > 0) {
+      data.questionsByYear[year][userId] = newCount;
+    } else {
+      // Remove the entry if count is 0
+      delete data.questionsByYear[year][userId];
     }
 
     return data;
