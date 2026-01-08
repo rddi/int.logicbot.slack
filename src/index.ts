@@ -67,6 +67,17 @@ interface SolvePromptPayload {
   dmMessageTs: string;
 }
 
+interface PrivateAnswerPayload {
+  channelId: string;
+  threadTs: string;
+  submitterId: string;
+  roundControlTs: string;
+  questionText: string;
+  answerText: string;
+  dmChannelId: string;
+  dmMessageTs: string;
+}
+
 // Helper: Resolve user ID from token
 async function resolveUserIdFromToken(client: any, token: string): Promise<string | null> {
   const t = token.trim();
@@ -447,6 +458,66 @@ async function updateDmMessageStatus(client: any, dmChannelId: string, dmMessage
   });
 }
 
+// Helper: Create DM blocks for private answer confirmation (similar to buildSolveDmBlocks but for private answers)
+function buildPrivateAnswerDmBlocks(params: {
+  submitterId: string;
+  questionText: string;
+  answerText: string;
+  permalink: string | null;
+  payloadValue: string;
+}) {
+  const { submitterId, questionText, answerText, permalink, payloadValue } = params;
+
+  const blocks: any[] = [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text:
+          `Has <@${submitterId}> solved your question:\n\n` +
+          `> "${questionText}"\n\n` +
+          `with their private answer:\n\n` +
+          `> _"${answerText}"_`,
+      },
+    },
+    {
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Yes' },
+          style: 'primary',
+          action_id: 'confirm_private_solve',
+          value: payloadValue,
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'No' },
+          action_id: 'cancel_private_solve',
+          value: payloadValue,
+        },
+      ],
+    },
+  ];
+
+  // Add "View thread" link button if we have a permalink
+  if (permalink) {
+    blocks.push({
+      type: 'actions',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'View thread' },
+          url: permalink,
+          action_id: 'view_thread_link',
+        },
+      ],
+    } as any);
+  }
+
+  return blocks;
+}
+
 // Slash command handler
 app.command('/logic', async ({ command, ack, respond, client }) => {
   await ack();
@@ -813,10 +884,33 @@ if (isAdmin(user_id)) {
   }
 
   try {
-    // 1) Post the riddle to the channel as a normal message
+    // 1) Post the riddle to the channel as a normal message with a button for private answers
     const riddlePost = await client.chat.postMessage({
       channel: channel_id,
       text: `🧠 <@${user_id}> asks:\n_*${rawText}*_`,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `🧠 <@${user_id}> asks:\n_*${rawText}*_`,
+          },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Submit answer privately' },
+              action_id: 'submit_private_answer',
+              value: JSON.stringify({
+                channelId: channel_id,
+                threadTs: '', // Will be set after post
+              }),
+            },
+          ],
+        },
+      ],
     });
 
     if (!riddlePost.ts) {
@@ -824,6 +918,36 @@ if (isAdmin(user_id)) {
     }
 
     const threadTs = riddlePost.ts;
+
+    // Update the button value with the actual threadTs
+    await client.chat.update({
+      channel: channel_id,
+      ts: riddlePost.ts,
+      text: `🧠 <@${user_id}> asks:\n_*${rawText}*_`,
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: `🧠 <@${user_id}> asks:\n_*${rawText}*_`,
+          },
+        },
+        {
+          type: 'actions',
+          elements: [
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Submit answer privately' },
+              action_id: 'submit_private_answer',
+              value: JSON.stringify({
+                channelId: channel_id,
+                threadTs: threadTs,
+              }),
+            },
+          ],
+        },
+      ],
+    });
 
     // 2) Ensure a round doesn't already exist in that new thread (it shouldn't, but keeps logic consistent)
     const existingRound = await findRoundControlMessage(channel_id, threadTs);
@@ -1200,6 +1324,286 @@ app.action('cancel_solve', async ({ action, ack, client }) => {
     );
   } catch (error) {
     console.error('Error cancelling solve:', error);
+  }
+});
+
+// Private answer submission: Button handler to open modal
+app.action('submit_private_answer', async ({ action, ack, body, client }) => {
+  await ack();
+
+  if (action.type !== 'button') return;
+
+  try {
+    const buttonData = JSON.parse((action as any).value);
+    const { channelId, threadTs } = buttonData;
+
+    // Open modal for private answer submission
+    await client.views.open({
+      trigger_id: (body as any).trigger_id,
+      view: {
+        type: 'modal',
+        callback_id: 'private_answer_modal',
+        title: {
+          type: 'plain_text',
+          text: 'Submit answer',
+        },
+        submit: {
+          type: 'plain_text',
+          text: 'Send',
+        },
+        close: {
+          type: 'plain_text',
+          text: 'Cancel',
+        },
+        private_metadata: JSON.stringify({
+          channelId,
+          threadTs,
+          submitterId: (body as any).user.id,
+        }),
+        blocks: [
+          {
+            type: 'input',
+            block_id: 'answer_input',
+            element: {
+              type: 'plain_text_input',
+              action_id: 'answer',
+              multiline: true,
+              placeholder: {
+                type: 'plain_text',
+                text: 'Enter your answer...',
+              },
+            },
+            label: {
+              type: 'plain_text',
+              text: 'Your answer',
+            },
+          },
+        ],
+      },
+    });
+  } catch (error) {
+    console.error('Error opening private answer modal:', error);
+  }
+});
+
+// Private answer submission: Modal submit handler
+app.view('private_answer_modal', async ({ ack, view, client }) => {
+  await ack();
+
+  try {
+    const metadata = JSON.parse(view.private_metadata);
+    const { channelId, threadTs, submitterId } = metadata;
+
+    // Get the answer from the modal
+    const answerBlock = view.state.values.answer_input;
+    const answerText = (answerBlock?.answer?.value || '').trim();
+
+    if (!answerText) {
+      // Answer is empty, modal will show error
+      return;
+    }
+
+    // Find the round
+    const roundInfo = await findRoundControlMessage(channelId, threadTs);
+    if (!roundInfo) {
+      // Round not found, send error to submitter
+      const submitterDm = await openDmChannel(client, submitterId);
+      await client.chat.postMessage({
+        channel: submitterDm,
+        text: '❌ Error: Round not found. The puzzle may have been deleted.',
+      });
+      return;
+    }
+
+    const { state } = roundInfo;
+
+    // Check if already solved
+    if (state.status === 'SOLVED') {
+      const submitterDm = await openDmChannel(client, submitterId);
+      await client.chat.postMessage({
+        channel: submitterDm,
+        text: '❌ This puzzle has already been solved.',
+      });
+      return;
+    }
+
+    // Get question text from thread root
+    const threadRoot = await client.conversations.history({
+      channel: channelId,
+      latest: threadTs,
+      inclusive: true,
+      limit: 1,
+    });
+
+    const rootMsg = threadRoot.messages?.[0];
+    const questionTextRaw = (rootMsg?.text || '(unknown question)').trim();
+    // Extract question text, removing the "🧠 <@user> asks:" prefix and markdown formatting
+    let questionText = questionTextRaw.replace(/^🧠 <@\w+> asks:\n_?\*?/, '').replace(/_?\*?$/, '').trim() || questionTextRaw;
+
+    // Build payload + permalink
+    const dmChannelId = await openDmChannel(client, state.op);
+    const permalink = await getPermalink(client, channelId, threadTs);
+
+    const dmMessageText = 'Confirm private answer';
+    const initialPayload: PrivateAnswerPayload = {
+      channelId,
+      threadTs,
+      submitterId,
+      roundControlTs: roundInfo.ts,
+      questionText,
+      answerText,
+      dmChannelId,
+      dmMessageTs: '', // set after post
+    };
+
+    // Post DM first (need ts for update-in-place)
+    const dmPost = await client.chat.postMessage({
+      channel: dmChannelId,
+      text: dmMessageText,
+      blocks: buildPrivateAnswerDmBlocks({
+        submitterId,
+        questionText,
+        answerText,
+        permalink,
+        payloadValue: '__PAYLOAD_PLACEHOLDER__',
+      }),
+    });
+
+    if (!dmPost.ts) throw new Error('Failed to post DM confirmation (missing ts)');
+
+    // Now we have dmMessageTs; update DM with correct payload values
+    initialPayload.dmMessageTs = dmPost.ts;
+    const payloadValue = JSON.stringify(initialPayload);
+
+    // Update DM so buttons contain the correct payload
+    await client.chat.update({
+      channel: dmChannelId,
+      ts: dmPost.ts,
+      text: dmMessageText,
+      blocks: buildPrivateAnswerDmBlocks({
+        submitterId,
+        questionText,
+        answerText,
+        permalink,
+        payloadValue,
+      }),
+    });
+  } catch (error) {
+    console.error('Error handling private answer submission:', error);
+  }
+});
+
+// Private answer: Confirm solve handler
+app.action('confirm_private_solve', async ({ action, ack, client }) => {
+  await ack();
+
+  if (action.type !== 'button') return;
+
+  try {
+    const data = JSON.parse((action as any).value) as PrivateAnswerPayload;
+    const { channelId, threadTs, submitterId, roundControlTs, dmChannelId, dmMessageTs } = data;
+
+    // Anti-double-confirm guard: re-check round status
+    const roundInfo = await findRoundControlMessage(channelId, threadTs);
+    if (!roundInfo || roundInfo.state.status === 'SOLVED') {
+      await updateDmMessageStatus(
+        client,
+        dmChannelId,
+        dmMessageTs,
+        'This round was already solved (no changes made).',
+        'CANCELLED'
+      );
+      return;
+    }
+
+    // Update round state to SOLVED
+    const updatedState: RoundState = {
+      ...roundInfo.state,
+      status: 'SOLVED',
+    };
+
+    await client.chat.update({
+      channel: channelId,
+      ts: roundControlTs,
+      text: formatRoundState(updatedState),
+    });
+
+    // Award point (with year tracking from thread timestamp)
+    const year = getYearFromTimestamp(threadTs);
+    await addPoints(channelId, submitterId, 1, year);
+
+    // Post generic solved message in thread
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: '✅ Solved. Point goes to <@' + submitterId + '>',
+    });
+
+    // Update the OP DM message in place
+    await updateDmMessageStatus(
+      client,
+      dmChannelId,
+      dmMessageTs,
+      'Confirmed — round solved and 1 point awarded.',
+      'CONFIRMED'
+    );
+
+    // DM the submitter
+    const submitterDm = await openDmChannel(client, submitterId);
+    await client.chat.postMessage({
+      channel: submitterDm,
+      text: '✅ Your private answer was accepted — you earned 1 point.',
+    });
+  } catch (error) {
+    console.error('Error confirming private solve:', error);
+
+    // Best-effort DM update if payload present
+    try {
+      const value = (action as any).value;
+      if (value) {
+        const data = JSON.parse(value) as Partial<PrivateAnswerPayload>;
+        if (data.dmChannelId && data.dmMessageTs) {
+          await updateDmMessageStatus(
+            client,
+            data.dmChannelId,
+            data.dmMessageTs,
+            'Error solving round. Please try again.',
+            'CANCELLED'
+          );
+        }
+      }
+    } catch {
+      // ignore
+    }
+  }
+});
+
+// Private answer: Cancel solve handler
+app.action('cancel_private_solve', async ({ action, ack, client }) => {
+  await ack();
+  if (action.type !== 'button') return;
+
+  try {
+    const data = JSON.parse((action as any).value) as PrivateAnswerPayload;
+    const { dmChannelId, dmMessageTs, submitterId } = data;
+
+    // Update the OP DM message in place
+    await updateDmMessageStatus(
+      client,
+      dmChannelId,
+      dmMessageTs,
+      'Cancelled — round remains open.',
+      'CANCELLED'
+    );
+
+    // DM the submitter
+    const submitterDm = await openDmChannel(client, submitterId);
+    await client.chat.postMessage({
+      channel: submitterDm,
+      text: '❌ Your private answer was not accepted this time.',
+    });
+  } catch (error) {
+    console.error('Error cancelling private solve:', error);
   }
 });
 
