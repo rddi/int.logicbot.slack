@@ -180,6 +180,7 @@ export async function getRootMessageText(client: any, channelId: string, threadT
   }
 }
 
+
 // Find the instruction message and extract solver ID if solved
 export async function findInstructionMessage(
   client: any,
@@ -290,34 +291,37 @@ export async function updateRootMessageButton(client: any, channelId: string, th
     const roundInfo = await findRoundControlMessage(channelId, threadTs);
     const op = roundInfo?.state.op;
 
+    // Build blocks: text section, then button
+    const blocks: any[] = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: rootText,
+        },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'View answer' },
+            action_id: 'view_answer',
+            value: JSON.stringify({
+              channelId: channelId,
+              encodedThreadTs: encodeThreadTs(threadTs),
+            }),
+          },
+        ],
+      },
+    ];
+
     // Update the message with "View answer" button
     await client.chat.update({
       channel: channelId,
       ts: threadTs,
       text: rootText,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: rootText,
-          },
-        },
-        {
-          type: 'actions',
-          elements: [
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'View answer' },
-              action_id: 'view_answer',
-              value: JSON.stringify({
-                channelId: channelId,
-                encodedThreadTs: encodeThreadTs(threadTs),
-              }),
-            },
-          ],
-        },
-      ],
+      blocks,
     });
   } catch (error) {
     console.error('Error updating root message button:', error);
@@ -332,20 +336,25 @@ export async function updateRootMessageClosed(client: any, channelId: string, th
       return;
     }
 
+    const closedText = rootText + '\n\n_🔒 Round closed by OP_';
+
+    // Build blocks: text section
+    const blocks: any[] = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: closedText,
+        },
+      },
+    ];
+
     // Update the message to show closed state (no buttons)
     await client.chat.update({
       channel: channelId,
       ts: threadTs,
-      text: rootText + '\n\n_🔒 Round closed by OP_',
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: rootText + '\n\n_🔒 Round closed by OP_',
-          },
-        },
-      ],
+      text: closedText,
+      blocks,
     });
   } catch (error) {
     console.error('Error updating root message to closed state:', error);

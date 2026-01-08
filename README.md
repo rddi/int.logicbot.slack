@@ -249,11 +249,13 @@ Use the [Slack Bolt adapter for AWS Lambda](https://slack.dev/bolt-js/deployment
 
 ### Commands
 
-- `/logic` - Start a new round (thread only)
+- `/logic <question>` - Start a new round with your question
 - `/logic help` - Show help message
 - `/logic scoreboard` - View scoreboard
 - `/logic stats` - Show your stats
 - `/logic stats @user` - Show stats for a user
+
+**Note:** If your question includes images, use `/logic <question>` first, then post your images directly in the thread that gets created.
 
 ### Admin Commands
 

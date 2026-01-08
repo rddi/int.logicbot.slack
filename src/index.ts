@@ -53,7 +53,10 @@ app.command('/logic', async ({ command, ack, respond, client }) => {
 \`/logic help\` - Show this help message
 \`/logic scoreboard\` - Ensure scoreboard exists and show it
 \`/logic stats\` - Show your stats
-\`/logic stats @user\` - Show stats for a user`;
+\`/logic stats @user\` - Show stats for a user
+
+*Including Images:*
+If your question includes images, use \`/logic <question>\` first, then post your images directly in the thread that gets created.`;
 
 let section2 = '';
 if (isAdmin(user_id)) {
@@ -459,44 +462,47 @@ if (isAdmin(user_id)) {
   }
 
   try {
+    // Build blocks for the question message
+    const questionBlocks: any[] = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `🧠 <@${user_id}> asks:\n_*${rawText}*_`,
+        },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Answer privately' },
+            action_id: 'submit_private_answer',
+            value: JSON.stringify({
+              channelId: channel_id,
+              threadTs: '', // Will be set after post
+            }),
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Close round' },
+            action_id: 'close_round',
+            style: 'danger',
+            value: JSON.stringify({
+              channelId: channel_id,
+              threadTs: '', // Will be set after post
+              op: user_id,
+            }),
+          },
+        ],
+      },
+    ];
+
     // 1) Post the riddle to the channel as a normal message with a button for private answers
     const riddlePost = await client.chat.postMessage({
       channel: channel_id,
       text: `🧠 <@${user_id}> asks:\n_*${rawText}*_`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `🧠 <@${user_id}> asks:\n_*${rawText}*_`,
-          },
-        },
-        {
-          type: 'actions',
-          elements: [
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Answer privately' },
-              action_id: 'submit_private_answer',
-              value: JSON.stringify({
-                channelId: channel_id,
-                threadTs: '', // Will be set after post
-              }),
-            },
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Close round' },
-              action_id: 'close_round',
-              style: 'danger',
-              value: JSON.stringify({
-                channelId: channel_id,
-                threadTs: '', // Will be set after post
-                op: user_id,
-              }),
-            },
-          ],
-        },
-      ],
+      blocks: questionBlocks,
     });
 
     if (!riddlePost.ts) {
@@ -505,55 +511,58 @@ if (isAdmin(user_id)) {
 
     const threadTs = riddlePost.ts;
 
+    // Build updated blocks with all buttons
+    const updatedQuestionBlocks: any[] = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `🧠 <@${user_id}> asks:\n_*${rawText}*_`,
+        },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Answer privately' },
+            action_id: 'submit_private_answer',
+            value: JSON.stringify({
+              channelId: channel_id,
+              encodedThreadTs: encodeThreadTs(threadTs),
+            }),
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Edit question' },
+            action_id: 'edit_question',
+            value: JSON.stringify({
+              channelId: channel_id,
+              encodedThreadTs: encodeThreadTs(threadTs),
+              op: user_id,
+            }),
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Close round' },
+            action_id: 'close_round',
+            style: 'danger',
+            value: JSON.stringify({
+              channelId: channel_id,
+              encodedThreadTs: encodeThreadTs(threadTs),
+              op: user_id,
+            }),
+          },
+        ],
+      },
+    ];
+
     // Update the button value with the actual threadTs
     await client.chat.update({
       channel: channel_id,
       ts: riddlePost.ts,
       text: `🧠 <@${user_id}> asks:\n_*${rawText}*_`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `🧠 <@${user_id}> asks:\n_*${rawText}*_`,
-          },
-        },
-        {
-          type: 'actions',
-          elements: [
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Answer privately' },
-              action_id: 'submit_private_answer',
-              value: JSON.stringify({
-                channelId: channel_id,
-                encodedThreadTs: encodeThreadTs(threadTs),
-              }),
-            },
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Edit question' },
-              action_id: 'edit_question',
-              value: JSON.stringify({
-                channelId: channel_id,
-                encodedThreadTs: encodeThreadTs(threadTs),
-                op: user_id,
-              }),
-            },
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Close round' },
-              action_id: 'close_round',
-              style: 'danger',
-              value: JSON.stringify({
-                channelId: channel_id,
-                encodedThreadTs: encodeThreadTs(threadTs),
-                op: user_id,
-              }),
-            },
-          ],
-        },
-      ],
+      blocks: updatedQuestionBlocks,
     });
 
     // 2) Ensure a round doesn't already exist in that new thread (it shouldn't, but keeps logic consistent)
@@ -589,7 +598,8 @@ if (isAdmin(user_id)) {
       text:
         `Round *OPEN* - OP: <@${user_id}>\n` +
         `Reply in this thread with guesses. Or privately using the button above.\n` +
-        `OP reacts with :yes: on the correct guess to solve (you’ll be asked to confirm).`,
+        `OP reacts with :yes: on the correct guess to solve (you'll be asked to confirm).\n\n` +
+        `💡 _Tip: If your question includes images, you can post them directly in this thread._`,
     });
 
     await respond({
@@ -1483,55 +1493,58 @@ app.view('edit_question_modal', async ({ ack, view, client, body }) => {
       text: formatRoundState(updatedState),
     });
 
+    // Build updated blocks: text section, then buttons
+    const updatedBlocks: any[] = [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `🧠 <@${op}> asks:\n_*${newQuestion}*_`,
+        },
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Answer privately' },
+            action_id: 'submit_private_answer',
+            value: JSON.stringify({
+              channelId: channelId,
+              encodedThreadTs: encodeThreadTs(threadTs),
+            }),
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Edit question' },
+            action_id: 'edit_question',
+            value: JSON.stringify({
+              channelId: channelId,
+              encodedThreadTs: encodeThreadTs(threadTs),
+              op: op,
+            }),
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Close round' },
+            action_id: 'close_round',
+            style: 'danger',
+            value: JSON.stringify({
+              channelId: channelId,
+              encodedThreadTs: encodeThreadTs(threadTs),
+              op: op,
+            }),
+          },
+        ],
+      },
+    ];
+
     // Update root message with new question
     await client.chat.update({
       channel: channelId,
       ts: threadTs,
       text: `🧠 <@${op}> asks:\n_*${newQuestion}*_`,
-      blocks: [
-        {
-          type: 'section',
-          text: {
-            type: 'mrkdwn',
-            text: `🧠 <@${op}> asks:\n_*${newQuestion}*_`,
-          },
-        },
-        {
-          type: 'actions',
-          elements: [
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Answer privately' },
-              action_id: 'submit_private_answer',
-              value: JSON.stringify({
-                channelId: channelId,
-                encodedThreadTs: encodeThreadTs(threadTs),
-              }),
-            },
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Edit question' },
-              action_id: 'edit_question',
-              value: JSON.stringify({
-                channelId: channelId,
-                encodedThreadTs: encodeThreadTs(threadTs),
-                op: op,
-              }),
-            },
-            {
-              type: 'button',
-              text: { type: 'plain_text', text: 'Close round' },
-              action_id: 'close_round',
-              style: 'danger',
-              value: JSON.stringify({
-                channelId: channelId,
-                encodedThreadTs: encodeThreadTs(threadTs),
-                op: op,
-              }),
-            },
-          ],
-        },
-      ],
+      blocks: updatedBlocks,
     });
 
     // Post message in thread to notify of edit
