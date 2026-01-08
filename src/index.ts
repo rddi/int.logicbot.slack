@@ -45,10 +45,16 @@ let BOT_ID: string | null = null;
 const regex = /\s*?:brain: (.+) asks:\n/;
 
 // Types
+enum RoundStatus {
+  OPEN = 'OPEN',
+  SOLVED = 'SOLVED',
+  CLOSED = 'CLOSED',
+}
+
 interface RoundState {
   version: string;
   op: string; // User ID of the OP
-  status: 'OPEN' | 'SOLVED';
+  status: RoundStatus;
   threadTs: string; // Thread timestamp (root message ts for the round)
   channelId: string;
   answer?: string; // The accepted answer (only present when SOLVED)
@@ -167,10 +173,23 @@ function parseRoundState(text: string): RoundState | null {
     );
     if (!match) return null;
 
+    // Map string status to enum
+    const statusStr = match[3];
+    let status: RoundStatus;
+    if (statusStr === 'OPEN') {
+      status = RoundStatus.OPEN;
+    } else if (statusStr === 'SOLVED') {
+      status = RoundStatus.SOLVED;
+    } else if (statusStr === 'CLOSED') {
+      status = RoundStatus.CLOSED;
+    } else {
+      return null; // Invalid status
+    }
+
     const state: RoundState = {
       version: match[1],
       op: match[2],
-      status: match[3] as 'OPEN' | 'SOLVED',
+      status: status,
       threadTs: match[4],
       channelId: match[5],
     };
@@ -526,6 +545,10 @@ async function updateRootMessageButton(client: any, channelId: string, threadTs:
     const rootMsg = rootMessage.messages[0];
     const rootText = rootMsg.text || '';
 
+    // Get round info to find OP
+    const roundInfo = await findRoundControlMessage(channelId, threadTs);
+    const op = roundInfo?.state.op;
+
     // Update the message with "View answer" button
     await client.chat.update({
       channel: channelId,
@@ -557,6 +580,142 @@ async function updateRootMessageButton(client: any, channelId: string, threadTs:
     });
   } catch (error) {
     console.error('Error updating root message button:', error);
+  }
+}
+
+// Helper: Find the instruction message and extract solver ID if solved
+async function findInstructionMessage(
+  client: any,
+  channelId: string,
+  threadTs: string
+): Promise<{ ts: string; text: string; solverId?: string } | null> {
+  try {
+    const result = await client.conversations.replies({
+      channel: channelId,
+      ts: threadTs,
+    });
+
+    if (!result.messages) return null;
+
+    // Find the instruction message (starts with "Round")
+    const { botUserId, botId } = await ensureBotIdentity();
+    for (const message of result.messages) {
+      const msgAny = message as any;
+      const isFromThisBot =
+        (message.user && message.user === botUserId) ||
+        (botId && msgAny.bot_id && msgAny.bot_id === botId);
+
+      if (isFromThisBot && message.text && message.text.startsWith('Round')) {
+        // Extract solver ID if present (format: "Round SOLVED - OP: <@OP_ID> - Solved by: <@SOLVER_ID>")
+        const solverMatch = message.text.match(/Solved by: <@(\w+)>/);
+        const solverId = solverMatch ? solverMatch[1] : undefined;
+        
+        return {
+          ts: message.ts!,
+          text: message.text,
+          solverId,
+        };
+      }
+    }
+    return null;
+  } catch (error) {
+    console.error('Error finding instruction message:', error);
+    return null;
+  }
+}
+
+// Helper: Find and update the instruction message in a thread
+async function findAndUpdateInstructionMessage(
+  client: any,
+  channelId: string,
+  threadTs: string,
+  state: RoundState,
+  solverId?: string
+): Promise<void> {
+  try {
+    const result = await client.conversations.replies({
+      channel: channelId,
+      ts: threadTs,
+    });
+
+    if (!result.messages) return;
+
+    // Find the instruction message (starts with "Round")
+    const { botUserId, botId } = await ensureBotIdentity();
+    for (const message of result.messages) {
+      const msgAny = message as any;
+      const isFromThisBot =
+        (message.user && message.user === botUserId) ||
+        (botId && msgAny.bot_id && msgAny.bot_id === botId);
+
+      if (isFromThisBot && message.text && message.text.startsWith('Round')) {
+        // Found the instruction message, update it
+        let statusText: string;
+        let instructionText: string;
+
+        if (state.status === RoundStatus.SOLVED) {
+          statusText = 'SOLVED';
+          const solverMention = solverId ? ` - Solved by: <@${solverId}>` : '';
+          instructionText = `Round *${statusText}* - OP: <@${state.op}>${solverMention}`;
+        } else if (state.status === RoundStatus.CLOSED) {
+          statusText = 'CLOSED';
+          instructionText = `Round *${statusText}* - OP: <@${state.op}>`;
+        } else {
+          statusText = 'OPEN';
+          instructionText =
+            `Round *${statusText}* - OP: <@${state.op}>\n` +
+            `Reply in this thread with guesses. Or privately using the button above.\n` +
+            `OP reacts with :yes: on the correct guess to solve (you'll be asked to confirm).`;
+        }
+
+        await client.chat.update({
+          channel: channelId,
+          ts: message.ts!,
+          text: instructionText,
+        });
+        return;
+      }
+    }
+  } catch (error) {
+    console.error('Error finding/updating instruction message:', error);
+  }
+}
+
+// Helper: Update root message to show closed state
+async function updateRootMessageClosed(client: any, channelId: string, threadTs: string, op: string) {
+  try {
+    // Get the root message
+    const rootMessage = await client.conversations.history({
+      channel: channelId,
+      latest: threadTs,
+      inclusive: true,
+      limit: 1,
+    });
+
+    if (!rootMessage.messages || rootMessage.messages.length === 0) {
+      return;
+    }
+
+    const rootMsg = rootMessage.messages[0];
+    const rootText = rootMsg.text || '';
+
+    // Update the message to show closed state (no buttons)
+    await client.chat.update({
+      channel: channelId,
+      ts: threadTs,
+      text: rootText + '\n\n_🔒 Round closed by OP_',
+      blocks: [
+        {
+          type: 'section',
+          text: {
+            type: 'mrkdwn',
+            text: rootText + '\n\n_🔒 Round closed by OP_',
+          },
+        },
+      ],
+    });
+  } catch (error) {
+    console.error('Error updating root message to closed state:', error);
   }
 }
 
@@ -1076,6 +1235,17 @@ if (isAdmin(user_id)) {
                 threadTs: '', // Will be set after post
               }),
             },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Close round' },
+              action_id: 'close_round',
+              style: 'danger',
+              value: JSON.stringify({
+                channelId: channel_id,
+                threadTs: '', // Will be set after post
+                op: user_id,
+              }),
+            },
           ],
         },
       ],
@@ -1112,6 +1282,17 @@ if (isAdmin(user_id)) {
                 encodedThreadTs: encodeThreadTs(threadTs),
               }),
             },
+            {
+              type: 'button',
+              text: { type: 'plain_text', text: 'Close round' },
+              action_id: 'close_round',
+              style: 'danger',
+              value: JSON.stringify({
+                channelId: channel_id,
+                encodedThreadTs: encodeThreadTs(threadTs),
+                op: user_id,
+              }),
+            },
           ],
         },
       ],
@@ -1131,7 +1312,7 @@ if (isAdmin(user_id)) {
     const roundState: RoundState = {
       version: '1',
       op: user_id,
-      status: 'OPEN',
+      status: RoundStatus.OPEN,
       threadTs: threadTs,
       channelId: channel_id,
     };
@@ -1246,12 +1427,12 @@ app.event('reaction_added', async ({ event, client }) => {
 
     const { state } = roundInfo;
 
-    // Check if already solved
-    if (state.status === 'SOLVED') {
-      console.log('Round is already solved');
+    // Check if already solved or closed
+    if (state.status === RoundStatus.SOLVED || state.status === RoundStatus.CLOSED) {
+      console.log('Round is already solved or closed');
       return;
     } else {
-      console.log('Round is not solved');
+      console.log('Round is not solved or closed');
     }
 
     // Check if the reactor is the OP
@@ -1407,12 +1588,13 @@ app.action('confirm_solve', async ({ action, ack, client }) => {
 
     // Anti-double-confirm guard: re-check round status
     const roundInfo = await findRoundControlMessage(channelId, threadTs);
-    if (!roundInfo || roundInfo.state.status === 'SOLVED') {
+    if (!roundInfo || roundInfo.state.status === RoundStatus.SOLVED || roundInfo.state.status === RoundStatus.CLOSED) {
+      const statusText = roundInfo?.state.status === RoundStatus.CLOSED ? 'closed' : 'solved';
       await updateDmMessageStatus(
         client,
         dmChannelId,
         dmMessageTs,
-        'This round was already solved (no changes made).',
+        `This round was already ${statusText} (no changes made).`,
         'CANCELLED'
       );
       return;
@@ -1421,7 +1603,7 @@ app.action('confirm_solve', async ({ action, ack, client }) => {
     // Update round state to SOLVED with answer
     const updatedState: RoundState = {
       ...roundInfo.state,
-      status: 'SOLVED',
+      status: RoundStatus.SOLVED,
       answer: data.answerText,
     };
 
@@ -1446,6 +1628,9 @@ app.action('confirm_solve', async ({ action, ack, client }) => {
     if (updatedState.answer) {
       await updateRootMessageButton(client, channelId, threadTs, updatedState.answer);
     }
+
+    // Update instruction message with SOLVED status and solver name
+    await findAndUpdateInstructionMessage(client, channelId, threadTs, updatedState, guessAuthorId);
 
     // Update the DM message in place
     await updateDmMessageStatus(
@@ -1597,12 +1782,13 @@ app.view('private_answer_modal', async ({ ack, view, client }) => {
 
     const { state } = roundInfo;
 
-    // Check if already solved
-    if (state.status === 'SOLVED') {
+    // Check if already solved or closed
+    if (state.status === RoundStatus.SOLVED || state.status === RoundStatus.CLOSED) {
       const submitterDm = await openDmChannel(client, submitterId);
+      const statusText = state.status === RoundStatus.SOLVED ? 'solved' : 'closed';
       await client.chat.postMessage({
         channel: submitterDm,
-        text: '❌ This puzzle has already been solved.',
+        text: `❌ This puzzle has already been ${statusText}.`,
       });
       return;
     }
@@ -1685,12 +1871,13 @@ app.action('confirm_private_solve', async ({ action, ack, client }) => {
 
     // Anti-double-confirm guard: re-check round status
     const roundInfo = await findRoundControlMessage(channelId, threadTs);
-    if (!roundInfo || roundInfo.state.status === 'SOLVED') {
+    if (!roundInfo || roundInfo.state.status === RoundStatus.SOLVED || roundInfo.state.status === RoundStatus.CLOSED) {
+      const statusText = roundInfo?.state.status === RoundStatus.CLOSED ? 'closed' : 'solved';
       await updateDmMessageStatus(
         client,
         dmChannelId,
         dmMessageTs,
-        'This round was already solved (no changes made).',
+        `This round was already ${statusText} (no changes made).`,
         'CANCELLED'
       );
       return;
@@ -1699,7 +1886,7 @@ app.action('confirm_private_solve', async ({ action, ack, client }) => {
     // Update round state to SOLVED with answer
     const updatedState: RoundState = {
       ...roundInfo.state,
-      status: 'SOLVED',
+      status: RoundStatus.SOLVED,
       answer: data.answerText,
     };
 
@@ -1724,6 +1911,9 @@ app.action('confirm_private_solve', async ({ action, ack, client }) => {
     if (updatedState.answer) {
       await updateRootMessageButton(client, channelId, threadTs, updatedState.answer);
     }
+
+    // Update instruction message with SOLVED status and solver name
+    await findAndUpdateInstructionMessage(client, channelId, threadTs, updatedState, submitterId);
 
     // Update the OP DM message in place
     await updateDmMessageStatus(
@@ -1793,6 +1983,119 @@ app.action('cancel_private_solve', async ({ action, ack, client }) => {
   }
 });
 
+// Close round: Button handler (OP only)
+app.action('close_round', async ({ action, ack, body, client }) => {
+  await ack();
+
+  if (action.type !== 'button') return;
+
+  const userId = (body as any).user.id;
+
+  try {
+    const buttonData = JSON.parse((action as any).value);
+    const { channelId, encodedThreadTs, op: expectedOp } = buttonData;
+    
+    if (!encodedThreadTs) {
+      console.error('Missing encodedThreadTs in button data');
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: 'Error: Missing thread information.',
+      });
+      return;
+    }
+    
+    const threadTs = decodeThreadTs(encodedThreadTs);
+
+    // Check if user is the OP
+    if (userId !== expectedOp) {
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: 'Only the OP can close this round.',
+      });
+      return;
+    }
+
+    // Find the round
+    const roundInfo = await findRoundControlMessage(channelId, threadTs);
+    if (!roundInfo) {
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: 'Round not found.',
+      });
+      return;
+    }
+
+    // Check if already closed or solved
+    if (roundInfo.state.status === RoundStatus.CLOSED) {
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: 'This round is already closed.',
+      });
+      return;
+    }
+
+    if (roundInfo.state.status === RoundStatus.SOLVED) {
+      await client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text: 'Cannot close a solved round.',
+      });
+      return;
+    }
+
+    // Update round state to CLOSED
+    const updatedState: RoundState = {
+      ...roundInfo.state,
+      status: RoundStatus.CLOSED,
+    };
+
+    await client.chat.update({
+      channel: channelId,
+      ts: roundInfo.ts,
+      text: formatRoundState(updatedState),
+    });
+
+    // Update root message to show closed state
+    await updateRootMessageClosed(client, channelId, threadTs, userId);
+
+    // Update instruction message with CLOSED status
+    await findAndUpdateInstructionMessage(client, channelId, threadTs, updatedState);
+
+    // Post message in thread
+    await client.chat.postMessage({
+      channel: channelId,
+      thread_ts: threadTs,
+      text: '🔒 Round closed by OP.',
+    });
+
+    await client.chat.postEphemeral({
+      channel: channelId,
+      user: userId,
+      text: 'Round closed.',
+    });
+  } catch (error) {
+    console.error('Error closing round:', error);
+    try {
+      const buttonData = JSON.parse((action as any).value);
+      const channelId = buttonData?.channelId || (body as any).channel?.id;
+      if (channelId) {
+        await client.chat.postEphemeral({
+          channel: channelId,
+          user: userId,
+          text: 'Error closing round.',
+        });
+      }
+    } catch (err) {
+      // If we can't even send an error message, just log it
+      console.error('Failed to send error message:', err);
+    }
+  }
+});
+
 // View answer: Button handler to show answer in modal
 app.action('view_answer', async ({ action, ack, body, client }) => {
   await ack();
@@ -1845,6 +2148,10 @@ app.action('view_answer', async ({ action, ack, body, client }) => {
     const questionTextRaw = (rootMsg?.text || '(unknown question)').trim();
     let questionText = questionTextRaw.replace(/^🧠 <@\w+> asks:\n_?\*?/, '').replace(/_?\*?$/, '').trim() || questionTextRaw;
 
+    // Find the solver from the instruction message
+    const instructionMsg = await findInstructionMessage(client, channelId, threadTs);
+    // const solverMention = instructionMsg?.solverId ? `Solved by: <@${instructionMsg.solverId}>\n\n` : '';
+
     // Open modal with answer
     await client.views.open({
       trigger_id: (body as any).trigger_id,
@@ -1863,14 +2170,14 @@ app.action('view_answer', async ({ action, ack, body, client }) => {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: `*Question:*\n${questionText}`,
+              text: `*Question (<@${roundInfo.state.op}>):*\n${questionText}`,
             },
           },
           {
             type: 'section',
             text: {
               type: 'mrkdwn',
-              text: `*Answer:*\n${roundInfo.state.answer}`,
+              text: `*Answer (<@${instructionMsg?.solverId}>):*\n${roundInfo.state.answer}`,
             },
           },
         ],
@@ -1911,7 +2218,7 @@ app.message(async ({ message, client }) => {
   try {
     // Check if round is solved
     const roundInfo = await findRoundControlMessage(channelId, threadTs);
-    if (!roundInfo || roundInfo.state.status !== 'SOLVED') {
+    if (!roundInfo || roundInfo.state.status !== RoundStatus.SOLVED) {
       return; // Not solved, no nudge needed
     }
 
