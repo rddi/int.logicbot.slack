@@ -86,20 +86,7 @@ export async function getScoreboardData(channelId: string): Promise<ScoreboardDa
 
     // Fallback: try parsing entire message
     try {
-      const parsed = JSON.parse(text);
-      // Ensure scoresByYear exists for backward compatibility
-      if (!parsed.scoresByYear) {
-        parsed.scoresByYear = {};
-      }
-      // Ensure questionsByYear exists for backward compatibility
-      if (!parsed.questionsByYear) {
-        parsed.questionsByYear = {};
-      }
-      // Remove legacy scores field if it exists
-      if (parsed.scores) {
-        delete parsed.scores;
-      }
-      return parsed;
+      return JSON.parse(text);
     } catch {
       return { scoresByYear: {}, questionsByYear: {}, lastUpdated: new Date().toISOString() };
     }

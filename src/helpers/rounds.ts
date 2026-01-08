@@ -33,50 +33,8 @@ export function decodeRoundState(encoded: string): RoundState | null {
 // Parse round state from bot message text
 export function parseRoundState(text: string): RoundState | null {
   try {
-    // Check if it's the new encoded format (base64)
-    // Try to decode as base64 first
-    try {
-      const decoded = decodeRoundState(text);
-      if (decoded) {
-        return decoded;
-      }
-    } catch {
-      // Not base64, try legacy format
-    }
-
-    // Legacy format: [logic_round v1] op=U123 status=OPEN threadTs=123.456 channelId=C123 [answer=...]
-    const match = text.match(
-      /\[logic_round v(\d+)\]\s+op=(\w+)\s+status=(\w+)\s+threadTs=([\d.]+)\s+channelId=(\w+)(?:\s+answer=([^\]]+))?/
-    );
-    if (!match) return null;
-
-    // Map string status to enum
-    const statusStr = match[3];
-    let status: RoundStatus;
-    if (statusStr === 'OPEN') {
-      status = RoundStatus.OPEN;
-    } else if (statusStr === 'SOLVED') {
-      status = RoundStatus.SOLVED;
-    } else if (statusStr === 'CLOSED') {
-      status = RoundStatus.CLOSED;
-    } else {
-      return null; // Invalid status
-    }
-
-    const state: RoundState = {
-      version: match[1],
-      op: match[2],
-      status: status,
-      threadTs: match[4],
-      channelId: match[5],
-    };
-
-    // Parse optional answer field
-    if (match[6]) {
-      state.answer = match[6];
-    }
-
-    return state;
+    // Decode from base64 encoded format
+    return decodeRoundState(text);
   } catch {
     return null;
   }
@@ -109,7 +67,7 @@ export async function findRoundControlMessage(
         (botId && msgAny.bot_id && msgAny.bot_id === botId);
 
       if (isFromThisBot && message.text) {
-        // Try to parse as round state (handles both encoded and legacy formats)
+        // Parse round state from encoded format
         const state = parseRoundState(message.text);
         if (state) {
           return { ts: message.ts!, state };
@@ -148,9 +106,8 @@ export async function getQuestionText(
     const rootMsg = threadRoot.messages?.[0];
     const questionTextRaw = (rootMsg?.text || '(unknown question)').trim();
     
-    // Try multiple parsing patterns for backwards compatibility
-    let questionText = questionTextRaw.replace(QUESTION_REGEX, '').trim() || questionTextRaw;
-    questionText = questionText.replace(/^🧠 <@\w+> asks:\n_?\*?/, '').replace(/_?\*?$/, '').trim() || questionText;
+    // Parse question text from root message format
+    const questionText = questionTextRaw.replace(QUESTION_REGEX, '').trim() || questionTextRaw;
     
     return questionText;
   } catch (error) {

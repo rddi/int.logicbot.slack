@@ -90,14 +90,6 @@ if (isAdmin(user_id)) {
       await getOrCreateScoreboard(channel_id);
       const data = await getScoreboardData(channel_id);
 
-      // Ensure scoresByYear and questionsByYear exist
-      if (!data.scoresByYear) {
-        data.scoresByYear = {};
-      }
-      if (!data.questionsByYear) {
-        data.questionsByYear = {};
-      }
-
       // Get all years from both scores and questions, sort them (newest first)
       const allYears = new Set([
         ...Object.keys(data.scoresByYear),
@@ -191,11 +183,6 @@ if (isAdmin(user_id)) {
       }
 
       const data = await getScoreboardData(channel_id);
-      
-      // Ensure questionsByYear exists
-      if (!data.questionsByYear) {
-        data.questionsByYear = {};
-      }
       
       // Calculate scores and questions by year and totals
       let totalScore = 0;
