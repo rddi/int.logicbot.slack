@@ -59,6 +59,14 @@ jobs:
         working-directory: infra
         run: terraform init
 
+      - name: Import existing IAM role (if exists)
+        working-directory: infra
+        run: |
+          # Try to import the IAM role if it exists in AWS but not in Terraform state
+          # This will fail gracefully if the role is already in state or doesn't exist
+          terraform import aws_iam_role.lambda_role logicbot-lambda-role || true
+        continue-on-error: true
+
       - name: Terraform Apply
         working-directory: infra
         run: |
