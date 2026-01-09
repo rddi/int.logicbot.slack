@@ -1,17 +1,16 @@
-# S3 Bucket and DynamoDB Table for Terraform State
-# These resources must be created BEFORE using the S3 backend
-# Run: terraform apply -target=aws_s3_bucket.terraform_state -target=aws_dynamodb_table.terraform_locks
-# Then configure the backend and run terraform init -migrate-state
+# Bootstrap Terraform Configuration
+# This creates the S3 bucket and DynamoDB table for Terraform state storage
+# This must be run BEFORE the main Terraform configuration can use the S3 backend
 
 resource "aws_s3_bucket" "terraform_state" {
-  bucket = "${var.app_name}-terraform-state"
+  bucket = "logicbot-terraform-state"
 
   lifecycle {
     prevent_destroy = true
   }
 
   tags = {
-    Name        = "${var.app_name} Terraform State"
+    Name        = "LogicBot Terraform State"
     Environment = "production"
     ManagedBy   = "Terraform"
   }
@@ -45,7 +44,7 @@ resource "aws_s3_bucket_public_access_block" "terraform_state" {
 }
 
 resource "aws_dynamodb_table" "terraform_locks" {
-  name         = "${var.app_name}-terraform-locks"
+  name         = "logicbot-terraform-locks"
   billing_mode = "PAY_PER_REQUEST"
   hash_key     = "LockID"
 
@@ -55,7 +54,7 @@ resource "aws_dynamodb_table" "terraform_locks" {
   }
 
   tags = {
-    Name        = "${var.app_name} Terraform Locks"
+    Name        = "LogicBot Terraform Locks"
     Environment = "production"
     ManagedBy   = "Terraform"
   }

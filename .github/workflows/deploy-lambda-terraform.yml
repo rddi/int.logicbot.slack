@@ -56,31 +56,15 @@ jobs:
           terraform_version: "1.6.0"
 
       - name: Bootstrap Terraform State (if needed)
-        working-directory: infra
+        working-directory: infra/bootstrap
         run: |
           # Check if S3 bucket exists
           if ! aws s3 ls "s3://logicbot-terraform-state" 2>/dev/null; then
             echo "State bucket doesn't exist. Creating state resources..."
-            terraform init -backend=false
+            terraform init
             terraform apply -auto-approve \
-              -target=aws_s3_bucket.terraform_state \
-              -target=aws_dynamodb_table.terraform_locks \
-              -target=aws_s3_bucket_versioning.terraform_state \
-              -target=aws_s3_bucket_server_side_encryption_configuration.terraform_state \
-              -target=aws_s3_bucket_public_access_block.terraform_state \
-              -var="aws_region=${{ secrets.AWS_REGION }}" \
-              -var="app_name=logicbot" \
-              -var="slack_bot_token=dummy" \
-              -var="slack_signing_secret=dummy" \
-              -var="logic_channel_id_main=dummy" \
-              -var="logic_channel_id_test=dummy"
-            echo "State resources created. Migrating to S3 backend..."
-            terraform init -migrate-state \
-              -backend-config="bucket=logicbot-terraform-state" \
-              -backend-config="key=terraform.tfstate" \
-              -backend-config="region=${{ secrets.AWS_REGION }}" \
-              -backend-config="dynamodb_table=logicbot-terraform-locks" \
-              -backend-config="encrypt=true"
+              -var="aws_region=${{ secrets.AWS_REGION }}"
+            echo "State resources created successfully."
           else
             echo "State bucket exists. Skipping bootstrap."
           fi
