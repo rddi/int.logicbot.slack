@@ -41,11 +41,32 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
 ### Option A: Create via Terraform (Recommended)
 
 1. **Initial bootstrap** (one-time setup):
+   
+   Replace `YOUR_AWS_REGION` with your actual AWS region (e.g., `us-east-1`, `eu-west-2`, `eu-west-1`).
+   
+   The bucket name will be automatically created as: `logicbot-terraform-state`
+   The DynamoDB table will be automatically created as: `logicbot-terraform-locks`
+   
+   **Important**: Initialize Terraform WITHOUT the backend first (since the bucket doesn't exist yet):
+   
    ```bash
    cd infra
-   terraform init
+   terraform init -backend=false
    terraform apply -target=aws_s3_bucket.terraform_state -target=aws_dynamodb_table.terraform_locks \
-     -var="aws_region=$AWS_REGION" \
+     -var="aws_region=YOUR_AWS_REGION" \
+     -var="app_name=logicbot" \
+     -var="slack_bot_token=dummy" \
+     -var="slack_signing_secret=dummy" \
+     -var="logic_channel_id_main=dummy" \
+     -var="logic_channel_id_test=dummy"
+   ```
+   
+   **Example** (if your region is `eu-west-2`):
+   ```bash
+   cd infra
+   terraform init -backend=false
+   terraform apply -target=aws_s3_bucket.terraform_state -target=aws_dynamodb_table.terraform_locks \
+     -var="aws_region=eu-west-2" \
      -var="app_name=logicbot" \
      -var="slack_bot_token=dummy" \
      -var="slack_signing_secret=dummy" \
@@ -54,11 +75,24 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
    ```
 
 2. **Migrate to S3 backend**:
+   
+   Replace `YOUR_AWS_REGION` with the same region you used above.
+   
    ```bash
    terraform init -migrate-state \
      -backend-config="bucket=logicbot-terraform-state" \
      -backend-config="key=terraform.tfstate" \
-     -backend-config="region=$AWS_REGION" \
+     -backend-config="region=YOUR_AWS_REGION" \
+     -backend-config="dynamodb_table=logicbot-terraform-locks" \
+     -backend-config="encrypt=true"
+   ```
+   
+   **Example** (if your region is `eu-west-2`):
+   ```bash
+   terraform init -migrate-state \
+     -backend-config="bucket=logicbot-terraform-state" \
+     -backend-config="key=terraform.tfstate" \
+     -backend-config="region=eu-west-2" \
      -backend-config="dynamodb_table=logicbot-terraform-locks" \
      -backend-config="encrypt=true"
    ```
@@ -66,11 +100,22 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
 ### Option B: Create Manually
 
 1. **Create S3 bucket**:
+   
+   Replace `YOUR_AWS_REGION` with your actual AWS region (e.g., `us-east-1`, `eu-west-2`).
+   
    ```bash
    aws s3api create-bucket \
      --bucket logicbot-terraform-state \
-     --region $AWS_REGION \
-     --create-bucket-configuration LocationConstraint=$AWS_REGION
+     --region YOUR_AWS_REGION \
+     --create-bucket-configuration LocationConstraint=YOUR_AWS_REGION
+   ```
+   
+   **Example** (if your region is `eu-west-2`):
+   ```bash
+   aws s3api create-bucket \
+     --bucket logicbot-terraform-state \
+     --region eu-west-2 \
+     --create-bucket-configuration LocationConstraint=eu-west-2
    ```
 
 2. **Enable versioning**:
@@ -102,13 +147,26 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
    ```
 
 5. **Create DynamoDB table**:
+   
+   Replace `YOUR_AWS_REGION` with your actual AWS region.
+   
    ```bash
    aws dynamodb create-table \
      --table-name logicbot-terraform-locks \
      --attribute-definitions AttributeName=LockID,AttributeType=S \
      --key-schema AttributeName=LockID,KeyType=HASH \
      --billing-mode PAY_PER_REQUEST \
-     --region $AWS_REGION
+     --region YOUR_AWS_REGION
+   ```
+   
+   **Example** (if your region is `eu-west-2`):
+   ```bash
+   aws dynamodb create-table \
+     --table-name logicbot-terraform-locks \
+     --attribute-definitions AttributeName=LockID,AttributeType=S \
+     --key-schema AttributeName=LockID,KeyType=HASH \
+     --billing-mode PAY_PER_REQUEST \
+     --region eu-west-2
    ```
 
 **Note**: The GitHub Actions IAM role must have permissions to:
