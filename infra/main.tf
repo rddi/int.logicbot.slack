@@ -58,10 +58,18 @@ resource "aws_apigatewayv2_integration" "lambda" {
   integration_uri  = aws_lambda_function.logicbot.invoke_arn
 }
 
-# API Gateway Route
-resource "aws_apigatewayv2_route" "slack_events" {
+# API Gateway Routes
+# POST route for Slack events
+resource "aws_apigatewayv2_route" "slack_events_post" {
   api_id    = aws_apigatewayv2_api.logicbot.id
   route_key = "POST /slack/events"
+  target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
+}
+
+# GET route for Slack URL verification (challenge parameter)
+resource "aws_apigatewayv2_route" "slack_events_get" {
+  api_id    = aws_apigatewayv2_api.logicbot.id
+  route_key = "GET /slack/events"
   target    = "integrations/${aws_apigatewayv2_integration.lambda.id}"
 }
 
