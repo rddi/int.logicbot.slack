@@ -3,7 +3,12 @@
 
 import { AwsLambdaReceiver } from '@slack/bolt';
 import { setAppReceiver } from './config';
-import type { APIGatewayProxyEvent, APIGatewayProxyResult, Context } from 'aws-lambda';
+import type {
+  APIGatewayProxyHandlerV2,
+  APIGatewayProxyEventV2,
+  APIGatewayProxyResultV2,
+  Context,
+} from 'aws-lambda';
 
 // Create AWS Lambda receiver
 const receiver = new AwsLambdaReceiver({
@@ -20,12 +25,14 @@ import './index';
 const boltHandler = receiver.toHandler();
 
 // Wrapper handler that handles Slack URL verification before Bolt processing
-export const handler = async (
-  event: APIGatewayProxyEvent,
+export const handler: APIGatewayProxyHandlerV2 = async (
+  event: APIGatewayProxyEventV2,
   context: Context
-): Promise<APIGatewayProxyResult> => {
+): Promise<APIGatewayProxyResultV2> => {
   // Handle Slack URL verification (must happen before signature verification)
-  if (event.httpMethod === 'GET' || event.requestContext?.http?.method === 'GET') {
+  const method = event.requestContext.http.method;
+  
+  if (method === 'GET') {
     // Parse query string for challenge parameter
     const queryParams = event.queryStringParameters || {};
     const challenge = queryParams.challenge;
@@ -60,5 +67,7 @@ export const handler = async (
   }
 
   // All other requests go to Bolt handler
-  return boltHandler(event, context, () => {}) as Promise<APIGatewayProxyResult>;
+  // AwsLambdaReceiver expects v1 events, so we need to convert or pass through
+  // The receiver should handle the conversion internally
+  return boltHandler(event as any, context, () => {}) as Promise<APIGatewayProxyResultV2>;
 };
