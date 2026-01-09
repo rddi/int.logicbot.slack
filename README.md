@@ -214,11 +214,7 @@ LOGIC_ADMIN_USER_IDS=U1234567890,U0987654321
 
 4. Update Slack app URLs to your Heroku URL: `https://your-app.herokuapp.com/slack/events`
 
-### Option 2: AWS Lambda / Serverless
-
-Use the [Slack Bolt adapter for AWS Lambda](https://slack.dev/bolt-js/deployments/aws-lambda) or similar serverless framework.
-
-### Option 3: VPS / Cloud Server
+### Option 2: VPS / Cloud Server
 
 1. Set up Node.js 18+ on your server
 2. Clone the repository
@@ -232,26 +228,6 @@ Use the [Slack Bolt adapter for AWS Lambda](https://slack.dev/bolt-js/deployment
 
 5. Set up a reverse proxy (nginx) or use the bot directly on a port
 6. Update Slack app URLs to your server URL
-
-
-### Option 4: GitHub Actions → AWS ECS (Fargate)
-
-This repo includes a Dockerfile and a GitHub Actions workflow that builds a container, pushes it to ECR, and updates an ECS service on every push to `main`.
-
-**You set up in AWS:**
-- An ECR repository
-- An ECS cluster + service (Fargate)
-- A task execution role (and optional task role)
-- Your Slack environment variables stored in SSM Parameter Store or Secrets Manager
-
-**GitHub repo secrets required:**
-- `AWS_REGION`
-- `AWS_ROLE_TO_ASSUME` (OIDC role ARN that GitHub can assume)
-- `ECR_REPOSITORY` (e.g. `logicbot`)
-- `ECS_CLUSTER`
-- `ECS_SERVICE`
-
-Then update `ecs-task-definition.json` placeholders (roles, log group, secret ARNs). The workflow is in `.github/workflows/deploy-ecs.yml`.
 
 
 ## Usage
