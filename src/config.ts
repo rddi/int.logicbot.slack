@@ -33,12 +33,36 @@ export const ADMIN_USER_IDS = process.env.LOGIC_ADMIN_USER_IDS
 export const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 // Initialize Slack app
-export const app = new App({
-  token: process.env.SLACK_BOT_TOKEN,
-  signingSecret: process.env.SLACK_SIGNING_SECRET,
-  logLevel: LogLevel.INFO,
-  processBeforeResponse: true,
-});
+// For Lambda, receiver will be set via setAppReceiver()
+let appInstance: App | null = null;
+
+export function getApp(): App {
+  if (!appInstance) {
+    appInstance = new App({
+      token: process.env.SLACK_BOT_TOKEN,
+      signingSecret: process.env.SLACK_SIGNING_SECRET,
+      logLevel: LogLevel.INFO,
+      processBeforeResponse: true,
+    });
+  }
+  return appInstance;
+}
+
+export function setAppReceiver(receiver: any) {
+  if (appInstance) {
+    throw new Error('App already initialized. Receiver must be set before app creation.');
+  }
+  appInstance = new App({
+    token: process.env.SLACK_BOT_TOKEN,
+    signingSecret: process.env.SLACK_SIGNING_SECRET,
+    logLevel: LogLevel.INFO,
+    processBeforeResponse: true,
+    receiver: receiver,
+  });
+}
+
+// Default app instance (for server mode)
+export const app = getApp();
 
 // Cache bot user ID / bot ID (set during startup)
 export let BOT_USER_ID: string | null = null;

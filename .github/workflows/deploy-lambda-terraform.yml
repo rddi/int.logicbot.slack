@@ -1,0 +1,75 @@
+name: Deploy to AWS Lambda
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript
+        run: npm run build
+
+      - name: Install production dependencies
+        run: npm ci --production
+
+      - name: Create Lambda deployment package
+        run: |
+          # Create zip with files at root (Lambda expects handler at root)
+          # Copy dist files to a temp directory, add node_modules, then zip
+          mkdir -p lambda-package
+          cp -r dist/* lambda-package/
+          cp -r node_modules lambda-package/
+          cd lambda-package
+          zip -r ../dist/lambda.zip .
+          cd ..
+          rm -rf lambda-package
+          ls -lh dist/lambda.zip
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_TO_ASSUME }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.6.0"
+
+      - name: Terraform Init
+        working-directory: infra
+        run: terraform init
+
+      - name: Terraform Apply
+        working-directory: infra
+        run: |
+          terraform apply -auto-approve \
+            -var="aws_region=${{ secrets.AWS_REGION }}" \
+            -var="slack_bot_token=${{ secrets.SLACK_BOT_TOKEN }}" \
+            -var="slack_signing_secret=${{ secrets.SLACK_SIGNING_SECRET }}" \
+            -var="logic_channel_id_main=${{ secrets.LOGIC_CHANNEL_ID_MAIN }}" \
+            -var="logic_channel_id_test=${{ secrets.LOGIC_CHANNEL_ID_TEST }}" \
+            -var="logic_admin_user_ids=${{ secrets.LOGIC_ADMIN_USER_IDS }}"
+
+      - name: Output Slack Request URL
+        working-directory: infra
+        run: terraform output -raw slack_request_url

@@ -1877,13 +1877,16 @@ app.message(async ({ message, client }) => {
   }
 });
 
-// Start the app
-(async () => {
-  try {
-    await app.start(PORT);
-    console.log(`⚡️ Logic Bot is running on port ${PORT}!`);
-  } catch (error) {
-    console.error('Failed to start app:', error);
-    process.exit(1);
-  }
-})();
+// Start the app (only if not running in Lambda)
+// Lambda uses src/lambda.ts instead
+if (process.env.AWS_LAMBDA_FUNCTION_NAME === undefined) {
+  (async () => {
+    try {
+      await app.start(PORT);
+      console.log(`⚡️ Logic Bot is running on port ${PORT}!`);
+    } catch (error) {
+      console.error('Failed to start app:', error);
+      process.exit(1);
+    }
+  })();
+}

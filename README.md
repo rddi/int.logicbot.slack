@@ -2,6 +2,8 @@
 
 A production-ready Slack bot for managing lateral-thinking puzzles using the Slack Events API and Bolt for JS.
 
+**🚀 Quick Deploy**: See [DEPLOYMENT.md](./DEPLOYMENT.md) for step-by-step production deployment instructions.
+
 ## What the Bot Does
 
 The Logic Bot helps manage puzzle-solving rounds in Slack threads:
@@ -283,6 +285,108 @@ Then update `ecs-task-definition.json` placeholders (roles, log group, secret AR
 - `/logic setscore @user 10` - Set a user's score
 - `/logic addpoint @user` - Add 1 point to a user
 - `/logic removepoint @user` - Remove 1 point from a user
+
+## Deployment (AWS Lambda + Terraform)
+
+The bot can be deployed to AWS Lambda using Terraform and GitHub Actions CI/CD.
+
+### Prerequisites
+
+1. **AWS Account** with appropriate permissions
+2. **GitHub OIDC Setup** for AWS authentication (no long-lived keys needed)
+3. **GitHub Secrets** configured (see below)
+
+### GitHub Secrets Required
+
+Configure these secrets in your GitHub repository settings:
+
+- `AWS_REGION` - AWS region (e.g., `us-east-1`)
+- `AWS_ROLE_TO_ASSUME` - ARN of IAM role for GitHub OIDC (see setup below)
+- `SLACK_BOT_TOKEN` - Slack Bot User OAuth Token (starts with `xoxb-`)
+- `SLACK_SIGNING_SECRET` - Slack Signing Secret
+- `LOGIC_CHANNEL_ID_MAIN` - Main channel ID where bot operates
+- `LOGIC_CHANNEL_ID_TEST` - Test channel ID where bot operates
+- `LOGIC_ADMIN_USER_IDS` - Comma-separated admin user IDs (optional)
+
+### Setting up GitHub OIDC for AWS
+
+1. Create an IAM role in AWS with trust policy allowing GitHub OIDC:
+   ```json
+   {
+     "Version": "2012-10-17",
+     "Statement": [
+       {
+         "Effect": "Allow",
+         "Principal": {
+           "Federated": "arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"
+         },
+         "Action": "sts:AssumeRoleWithWebIdentity",
+         "Condition": {
+           "StringEquals": {
+             "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+           },
+           "StringLike": {
+             "token.actions.githubusercontent.com:sub": "repo:YOUR_GITHUB_ORG/YOUR_REPO:*"
+           }
+         }
+       }
+     ]
+   }
+   ```
+
+2. Attach policies allowing:
+   - Lambda function creation/update
+   - API Gateway creation/update
+   - IAM role creation/update
+   - CloudWatch Logs
+
+3. Copy the role ARN to `AWS_ROLE_TO_ASSUME` secret
+
+### Deployment Process
+
+1. Push to `main` branch triggers GitHub Actions workflow
+2. Workflow:
+   - Builds TypeScript
+   - Creates Lambda deployment zip (`dist/lambda.zip`)
+   - Runs Terraform to deploy infrastructure
+   - Outputs the Slack Request URL
+
+3. **Configure Slack App**:
+   - Copy the `slack_request_url` from Terraform output
+   - Paste into Slack App settings:
+     - **Slash Commands**: Request URL
+     - **Interactivity & Shortcuts**: Request URL
+     - **Event Subscriptions**: Request URL
+
+### Security Note
+
+**Current Implementation (Simple)**: Secrets are stored as Lambda environment variables. This is acceptable for small internal bots, but note that:
+- Secrets appear in Terraform state files (mark as sensitive in variables)
+- Secrets are visible in AWS Lambda console
+- Consider using AWS Secrets Manager or SSM Parameter Store for production (see below)
+
+**Better Approach (Production)**: Store secrets in AWS Secrets Manager or SSM Parameter Store:
+1. Create secrets in AWS Secrets Manager
+2. Update Terraform to reference secrets instead of variables
+3. Add IAM permissions for Lambda to read secrets
+4. Update Lambda code to fetch secrets at runtime
+
+### Local Development
+
+For local development, the bot still runs as a server:
+
+```bash
+npm run dev
+```
+
+The code automatically detects Lambda vs server mode using `AWS_LAMBDA_FUNCTION_NAME` environment variable.
+
+### Infrastructure Files
+
+- `infra/versions.tf` - Terraform provider configuration
+- `infra/variables.tf` - Input variables
+- `infra/main.tf` - Lambda, API Gateway, IAM resources
+- `infra/outputs.tf` - Outputs including Slack Request URL
 
 ## Architecture
 
