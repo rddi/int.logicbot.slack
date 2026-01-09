@@ -139,8 +139,8 @@ if (isAdmin(user_id)) {
         }
       }
 
-      await respond({
-        response_type: 'ephemeral',
+      await client.chat.postMessage({
+        channel: channel_id,
         text: scoreboardText,
       });
     } catch (error) {
@@ -238,8 +238,8 @@ if (isAdmin(user_id)) {
         statsText += `\n*Total: ${totalParts.join(', ')}*`;
       }
 
-      await respond({
-        response_type: 'ephemeral',
+      await client.chat.postMessage({
+        channel: channel_id,
         text: statsText,
       });
     } catch (error) {
@@ -763,6 +763,13 @@ app.event('reaction_added', async ({ event, client }) => {
     }
 
     const guessAuthorId = event.item_user;
+
+    // Don't allow solving bot messages
+    const { botUserId } = await ensureBotIdentity();
+    if (guessAuthorId === botUserId) {
+      console.log('Reacted message is from the bot, ignoring');
+      return;
+    }
 
     // Don't let OP solve their own guess (except in test channel)
     if (guessAuthorId === state.op) {
