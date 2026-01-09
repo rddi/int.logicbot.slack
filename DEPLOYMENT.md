@@ -136,6 +136,26 @@ Go to [api.slack.com/apps](https://api.slack.com/apps) → Your App
 - Ensure Slack app has correct scopes
 
 ### Terraform Apply Fails
+
+#### "EntityAlreadyExists" Error for IAM Role
+If you see an error like `Role with name logicbot-lambda-role already exists`, the IAM role exists in AWS but not in Terraform state. Import it manually:
+
+```bash
+cd infra
+terraform init
+terraform import \
+  -var="aws_region=$AWS_REGION" \
+  -var="slack_bot_token=$SLACK_BOT_TOKEN" \
+  -var="slack_signing_secret=$SLACK_SIGNING_SECRET" \
+  -var="logic_channel_id_main=$LOGIC_CHANNEL_ID_MAIN" \
+  -var="logic_channel_id_test=$LOGIC_CHANNEL_ID_TEST" \
+  -var="logic_admin_user_ids=$LOGIC_ADMIN_USER_IDS" \
+  aws_iam_role.lambda_role logicbot-lambda-role
+```
+
+Then re-run `terraform apply`.
+
+#### Other Common Issues
 - Check AWS credentials/permissions
 - Verify all GitHub secrets are set
 - Check Terraform state (if re-running, may need `terraform init`)
