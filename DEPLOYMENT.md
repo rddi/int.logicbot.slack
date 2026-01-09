@@ -47,31 +47,48 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
    The bucket name will be automatically created as: `logicbot-terraform-state`
    The DynamoDB table will be automatically created as: `logicbot-terraform-locks`
    
-   **Important**: Initialize Terraform WITHOUT the backend first (since the bucket doesn't exist yet):
+   **Important**: Temporarily disable the backend configuration during bootstrap:
    
    ```bash
    cd infra
-   terraform init -backend=false
+   # Temporarily rename backend.tf to skip backend during bootstrap
+   mv backend.tf backend.tf.bak
+   
+   # Initialize without backend
+   terraform init
+   
+   # Create state resources
    terraform apply -target=aws_s3_bucket.terraform_state -target=aws_dynamodb_table.terraform_locks \
+     -target=aws_s3_bucket_versioning.terraform_state \
+     -target=aws_s3_bucket_server_side_encryption_configuration.terraform_state \
+     -target=aws_s3_bucket_public_access_block.terraform_state \
      -var="aws_region=YOUR_AWS_REGION" \
      -var="app_name=logicbot" \
      -var="slack_bot_token=dummy" \
      -var="slack_signing_secret=dummy" \
      -var="logic_channel_id_main=dummy" \
      -var="logic_channel_id_test=dummy"
+   
+   # Restore backend.tf
+   mv backend.tf.bak backend.tf
    ```
    
    **Example** (if your region is `eu-west-2`):
    ```bash
    cd infra
-   terraform init -backend=false
+   mv backend.tf backend.tf.bak
+   terraform init
    terraform apply -target=aws_s3_bucket.terraform_state -target=aws_dynamodb_table.terraform_locks \
+     -target=aws_s3_bucket_versioning.terraform_state \
+     -target=aws_s3_bucket_server_side_encryption_configuration.terraform_state \
+     -target=aws_s3_bucket_public_access_block.terraform_state \
      -var="aws_region=eu-west-2" \
      -var="app_name=logicbot" \
      -var="slack_bot_token=dummy" \
      -var="slack_signing_secret=dummy" \
      -var="logic_channel_id_main=dummy" \
      -var="logic_channel_id_test=dummy"
+   mv backend.tf.bak backend.tf
    ```
 
 2. **Migrate to S3 backend**:
