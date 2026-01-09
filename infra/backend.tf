@@ -5,7 +5,7 @@
 terraform {
   backend "s3" {
     # These values are provided via -backend-config in GitHub Actions workflow
-    # bucket         = "logicbot-terraform-state"
+    # bucket         = "logicbot-terraform-state-new"
     # key            = "terraform.tfstate"
     # region         = "us-east-1"
     # dynamodb_table = "logicbot-terraform-locks"

@@ -3,7 +3,7 @@
 # This must be run BEFORE the main Terraform configuration can use the S3 backend
 
 resource "aws_s3_bucket" "terraform_state" {
-  bucket = "logicbot-terraform-state"
+  bucket = "logicbot-terraform-state-new"
 
   lifecycle {
     prevent_destroy = true
