@@ -24,15 +24,98 @@ This guide walks you through deploying LogicBot to AWS Lambda using Terraform an
    - Select "Web Identity" → Choose "token.actions.githubusercontent.com"
    - Audience: `sts.amazonaws.com`
    - Add condition: `StringLike` with key `token.actions.githubusercontent.com:sub`
-   - Value: `repo:YOUR_GITHUB_ORG/YOUR_REPO_NAME:*`
+   - Value: `repo:iddi/int.logicbot.slack:*`
    - Attach policies:
      - `AWSLambda_FullAccess` (or more restrictive custom policy)
      - `IAMFullAccess` (or policy allowing role/function creation)
      - `AmazonAPIGatewayAdministrator` (or API Gateway management permissions)
+     - `AmazonS3FullAccess` (for Terraform state bucket)
+     - `AmazonDynamoDBFullAccess` (for Terraform state locking)
    - Name the role (e.g., `github-actions-logicbot`)
    - **Copy the Role ARN** (you'll need it for GitHub secret)
 
-## Step 2: Configure GitHub Secrets
+## Step 2: Create Terraform State Resources
+
+Before deploying, you need to create the S3 bucket and DynamoDB table for Terraform state storage. This ensures state persists across deployments and prevents "already exists" errors.
+
+### Option A: Create via Terraform (Recommended)
+
+1. **Initial bootstrap** (one-time setup):
+   ```bash
+   cd infra
+   terraform init
+   terraform apply -target=aws_s3_bucket.terraform_state -target=aws_dynamodb_table.terraform_locks \
+     -var="aws_region=$AWS_REGION" \
+     -var="app_name=logicbot" \
+     -var="slack_bot_token=dummy" \
+     -var="slack_signing_secret=dummy" \
+     -var="logic_channel_id_main=dummy" \
+     -var="logic_channel_id_test=dummy"
+   ```
+
+2. **Migrate to S3 backend**:
+   ```bash
+   terraform init -migrate-state \
+     -backend-config="bucket=logicbot-terraform-state" \
+     -backend-config="key=terraform.tfstate" \
+     -backend-config="region=$AWS_REGION" \
+     -backend-config="dynamodb_table=logicbot-terraform-locks" \
+     -backend-config="encrypt=true"
+   ```
+
+### Option B: Create Manually
+
+1. **Create S3 bucket**:
+   ```bash
+   aws s3api create-bucket \
+     --bucket logicbot-terraform-state \
+     --region $AWS_REGION \
+     --create-bucket-configuration LocationConstraint=$AWS_REGION
+   ```
+
+2. **Enable versioning**:
+   ```bash
+   aws s3api put-bucket-versioning \
+     --bucket logicbot-terraform-state \
+     --versioning-configuration Status=Enabled
+   ```
+
+3. **Enable encryption**:
+   ```bash
+   aws s3api put-bucket-encryption \
+     --bucket logicbot-terraform-state \
+     --server-side-encryption-configuration '{
+       "Rules": [{
+         "ApplyServerSideEncryptionByDefault": {
+           "SSEAlgorithm": "AES256"
+         }
+       }]
+     }'
+   ```
+
+4. **Block public access**:
+   ```bash
+   aws s3api put-public-access-block \
+     --bucket logicbot-terraform-state \
+     --public-access-block-configuration \
+       "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
+   ```
+
+5. **Create DynamoDB table**:
+   ```bash
+   aws dynamodb create-table \
+     --table-name logicbot-terraform-locks \
+     --attribute-definitions AttributeName=LockID,AttributeType=S \
+     --key-schema AttributeName=LockID,KeyType=HASH \
+     --billing-mode PAY_PER_REQUEST \
+     --region $AWS_REGION
+   ```
+
+**Note**: The GitHub Actions IAM role must have permissions to:
+- `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` on `logicbot-terraform-state`
+- `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:DeleteItem` on `logicbot-terraform-locks`
+
+## Step 3: Configure GitHub Secrets
 
 Go to your GitHub repository → Settings → Secrets and variables → Actions → New repository secret
 
@@ -63,7 +146,7 @@ Add these secrets:
    - Value: Comma-separated user IDs (e.g., `U1234567,U2345678`)
    - How to get: Right-click user → View profile → Copy User ID (or use `/logic stats @user` after bot is running)
 
-## Step 3: Deploy via GitHub Actions
+## Step 4: Deploy via GitHub Actions
 
 1. **Push to main branch**:
    ```bash
@@ -79,7 +162,7 @@ Add these secrets:
    - In the workflow output, find the "Output Slack Request URL" step
    - Copy the URL (format: `https://xxxxx.execute-api.region.amazonaws.com/slack/events`)
 
-## Step 4: Configure Slack App Request URLs
+## Step 5: Configure Slack App Request URLs
 
 Go to [api.slack.com/apps](https://api.slack.com/apps) → Your App
 
@@ -103,7 +186,7 @@ Go to [api.slack.com/apps](https://api.slack.com/apps) → Your App
      - `file_shared` (if using `/logic image`)
    - Click "Save Changes"
 
-## Step 5: Verify Deployment
+## Step 6: Verify Deployment
 
 1. **Test in Slack**:
    - Go to your configured channel
@@ -135,14 +218,32 @@ Go to [api.slack.com/apps](https://api.slack.com/apps) → Your App
 - Check Request URL is correct (must end with `/slack/events`)
 - Ensure Slack app has correct scopes
 
+### Slack URL Verification Fails
+The Lambda handler automatically handles Slack's URL verification challenge. If verification fails:
+- Check that the GET route is configured in API Gateway (should be automatic)
+- Verify the Lambda handler returns `{"challenge": "<value>"}` for verification requests
+- Check CloudWatch Logs for any errors during verification
+
 ### Terraform Apply Fails
 
-#### "EntityAlreadyExists" Error for IAM Role
-If you see an error like `Role with name logicbot-lambda-role already exists`, the IAM role exists in AWS but not in Terraform state. Import it manually:
+#### "EntityAlreadyExists" Errors
+With remote state (S3 backend), this should not occur. If you see "already exists" errors:
+- Verify the S3 backend is configured correctly in the workflow
+- Check that Terraform state exists in S3: `aws s3 ls s3://logicbot-terraform-state/`
+- If resources exist but aren't in state, import them manually (see below)
+
+#### Importing Existing Resources
+If a resource exists in AWS but not in Terraform state:
 
 ```bash
 cd infra
-terraform init
+terraform init \
+  -backend-config="bucket=logicbot-terraform-state" \
+  -backend-config="key=terraform.tfstate" \
+  -backend-config="region=$AWS_REGION" \
+  -backend-config="dynamodb_table=logicbot-terraform-locks" \
+  -backend-config="encrypt=true"
+
 terraform import \
   -var="aws_region=$AWS_REGION" \
   -var="slack_bot_token=$SLACK_BOT_TOKEN" \
@@ -153,12 +254,11 @@ terraform import \
   aws_iam_role.lambda_role logicbot-lambda-role
 ```
 
-Then re-run `terraform apply`.
-
 #### Other Common Issues
-- Check AWS credentials/permissions
+- Check AWS credentials/permissions (including S3 and DynamoDB access)
 - Verify all GitHub secrets are set
-- Check Terraform state (if re-running, may need `terraform init`)
+- Verify S3 bucket and DynamoDB table exist
+- Check Terraform state in S3: `aws s3 ls s3://logicbot-terraform-state/`
 
 ## Updating the Deployment
 
@@ -194,10 +294,11 @@ terraform apply -auto-approve \
 
 ## Security Best Practices
 
-1. **Terraform State**: Consider using remote state (S3 + DynamoDB) for team collaboration
+1. **Terraform State**: Remote state (S3 + DynamoDB) is now configured by default for reliable deployments
 2. **Secrets Management**: For production, consider migrating to AWS Secrets Manager (see README)
 3. **IAM Permissions**: Use least-privilege policies instead of full access
 4. **Lambda Environment**: Rotate Slack tokens periodically
+5. **State Bucket**: The S3 bucket has versioning and encryption enabled; keep it private
 
 ## Rollback
 

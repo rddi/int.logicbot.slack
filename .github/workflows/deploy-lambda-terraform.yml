@@ -57,7 +57,13 @@ jobs:
 
       - name: Terraform Init
         working-directory: infra
-        run: terraform init
+        run: |
+          terraform init \
+            -backend-config="bucket=logicbot-terraform-state" \
+            -backend-config="key=terraform.tfstate" \
+            -backend-config="region=${{ secrets.AWS_REGION }}" \
+            -backend-config="dynamodb_table=logicbot-terraform-locks" \
+            -backend-config="encrypt=true"
 
       - name: Terraform Apply
         working-directory: infra

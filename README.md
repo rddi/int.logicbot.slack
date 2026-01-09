@@ -302,7 +302,7 @@ Configure these secrets in your GitHub repository settings:
              "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
            },
            "StringLike": {
-             "token.actions.githubusercontent.com:sub": "repo:YOUR_GITHUB_ORG/YOUR_REPO:*"
+                    "token.actions.githubusercontent.com:sub": "repo:iddi/int.logicbot.slack:*"
            }
          }
        }
