@@ -44,7 +44,7 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
    
    Replace `YOUR_AWS_REGION` with your actual AWS region (e.g., `us-east-1`, `eu-west-2`, `eu-west-1`).
    
-   The bucket name will be automatically created as: `logicbot-terraform-state-new`
+   The bucket name will be automatically created as: `logicbot-terraform-state`
    The DynamoDB table will be automatically created as: `logicbot-terraform-locks`
    
    **Important**: Temporarily disable the backend configuration during bootstrap:
@@ -97,7 +97,7 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
    
    ```bash
    terraform init -migrate-state \
-     -backend-config="bucket=logicbot-terraform-state-new" \
+     -backend-config="bucket=logicbot-terraform-state" \
      -backend-config="key=terraform.tfstate" \
      -backend-config="region=YOUR_AWS_REGION" \
      -backend-config="dynamodb_table=logicbot-terraform-locks" \
@@ -107,7 +107,7 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
    **Example** (if your region is `eu-west-2`):
    ```bash
    terraform init -migrate-state \
-     -backend-config="bucket=logicbot-terraform-state-new" \
+     -backend-config="bucket=logicbot-terraform-state" \
      -backend-config="key=terraform.tfstate" \
      -backend-config="region=eu-west-2" \
      -backend-config="dynamodb_table=logicbot-terraform-locks" \
@@ -122,7 +122,7 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
    
    ```bash
    aws s3api create-bucket \
-     --bucket logicbot-terraform-state-new \
+     --bucket logicbot-terraform-state \
      --region YOUR_AWS_REGION \
      --create-bucket-configuration LocationConstraint=YOUR_AWS_REGION
    ```
@@ -130,7 +130,7 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
    **Example** (if your region is `eu-west-2`):
    ```bash
    aws s3api create-bucket \
-     --bucket logicbot-terraform-state-new \
+     --bucket logicbot-terraform-state \
      --region eu-west-2 \
      --create-bucket-configuration LocationConstraint=eu-west-2
    ```
@@ -138,14 +138,14 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
 2. **Enable versioning**:
    ```bash
    aws s3api put-bucket-versioning \
-     --bucket logicbot-terraform-state-new \
+     --bucket logicbot-terraform-state \
      --versioning-configuration Status=Enabled
    ```
 
 3. **Enable encryption**:
    ```bash
    aws s3api put-bucket-encryption \
-     --bucket logicbot-terraform-state-new \
+     --bucket logicbot-terraform-state \
      --server-side-encryption-configuration '{
        "Rules": [{
          "ApplyServerSideEncryptionByDefault": {
@@ -158,7 +158,7 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
 4. **Block public access**:
    ```bash
    aws s3api put-public-access-block \
-     --bucket logicbot-terraform-state-new \
+     --bucket logicbot-terraform-state \
      --public-access-block-configuration \
        "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
    ```
@@ -187,7 +187,7 @@ Before deploying, you need to create the S3 bucket and DynamoDB table for Terraf
    ```
 
 **Note**: The GitHub Actions IAM role must have permissions to:
-- `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` on `logicbot-terraform-state-new`
+- `s3:GetObject`, `s3:PutObject`, `s3:ListBucket` on `logicbot-terraform-state`
 - `dynamodb:GetItem`, `dynamodb:PutItem`, `dynamodb:DeleteItem` on `logicbot-terraform-locks`
 
 ## Step 3: Configure GitHub Secrets
@@ -304,7 +304,7 @@ The Lambda handler automatically handles Slack's URL verification challenge. If 
 #### "EntityAlreadyExists" Errors
 With remote state (S3 backend), this should not occur. If you see "already exists" errors:
 - Verify the S3 backend is configured correctly in the workflow
-- Check that Terraform state exists in S3: `aws s3 ls s3://logicbot-terraform-state-new/`
+- Check that Terraform state exists in S3: `aws s3 ls s3://logicbot-terraform-state/`
 - If resources exist but aren't in state, import them manually (see below)
 
 #### Importing Existing Resources
@@ -313,7 +313,7 @@ If a resource exists in AWS but not in Terraform state:
 ```bash
 cd infra
 terraform init \
-  -backend-config="bucket=logicbot-terraform-state-new" \
+  -backend-config="bucket=logicbot-terraform-state" \
   -backend-config="key=terraform.tfstate" \
   -backend-config="region=$AWS_REGION" \
   -backend-config="dynamodb_table=logicbot-terraform-locks" \
@@ -333,7 +333,7 @@ terraform import \
 - Check AWS credentials/permissions (including S3 and DynamoDB access)
 - Verify all GitHub secrets are set
 - Verify S3 bucket and DynamoDB table exist
-- Check Terraform state in S3: `aws s3 ls s3://logicbot-terraform-state-new/`
+- Check Terraform state in S3: `aws s3 ls s3://logicbot-terraform-state/`
 
 ## Updating the Deployment
 

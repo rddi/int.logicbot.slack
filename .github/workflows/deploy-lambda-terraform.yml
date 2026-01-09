@@ -59,7 +59,7 @@ jobs:
         working-directory: infra/bootstrap
         run: |
           # Check if S3 bucket exists
-          if ! aws s3 ls "s3://logicbot-terraform-state-new" 2>/dev/null; then
+          if ! aws s3 ls "s3://logicbot-terraform-state" 2>/dev/null; then
             echo "State bucket doesn't exist. Creating state resources in ${{ secrets.AWS_REGION }}..."
             terraform init
             terraform apply -auto-approve \
@@ -67,14 +67,14 @@ jobs:
             echo "State resources created successfully."
           else
             # Check bucket region
-            BUCKET_REGION=$(aws s3api get-bucket-location --bucket logicbot-terraform-state-new --query LocationConstraint --output text 2>/dev/null || echo "None")
+            BUCKET_REGION=$(aws s3api get-bucket-location --bucket logicbot-terraform-state --query LocationConstraint --output text 2>/dev/null || echo "None")
             if [ "$BUCKET_REGION" = "None" ] || [ -z "$BUCKET_REGION" ]; then
               BUCKET_REGION="us-east-1"  # Default for us-east-1 (returns None)
             fi
             if [ "$BUCKET_REGION" != "${{ secrets.AWS_REGION }}" ]; then
               echo "ERROR: Bucket exists in $BUCKET_REGION but AWS_REGION is set to ${{ secrets.AWS_REGION }}"
               echo "To fix: Delete the bucket and let it be recreated, or update AWS_REGION secret to match bucket region"
-              echo "To delete: aws s3 rb s3://logicbot-terraform-state-new --force"
+              echo "To delete: aws s3 rb s3://logicbot-terraform-state --force"
               exit 1
             fi
             echo "State bucket exists in ${{ secrets.AWS_REGION }}. Skipping bootstrap."
@@ -85,7 +85,7 @@ jobs:
         working-directory: infra
         run: |
           terraform init -reconfigure \
-            -backend-config="bucket=logicbot-terraform-state-new" \
+            -backend-config="bucket=logicbot-terraform-state" \
             -backend-config="key=terraform.tfstate" \
             -backend-config="region=${{ secrets.AWS_REGION }}" \
             -backend-config="dynamodb_table=logicbot-terraform-locks" \
