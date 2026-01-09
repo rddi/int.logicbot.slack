@@ -1,0 +1,40 @@
+{
+  "family": "logicbot",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::<YOUR_ACCOUNT_ID>:role/<ecsTaskExecutionRole>",
+  "taskRoleArn": "arn:aws:iam::<YOUR_ACCOUNT_ID>:role/<logicbotTaskRole>",
+  "containerDefinitions": [
+    {
+      "name": "logicbot",
+      "image": "<IMAGE_URI_REPLACED_BY_GITHUB_ACTION>",
+      "essential": true,
+      "portMappings": [
+        {
+          "containerPort": 3000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "PORT", "value": "3000" }
+      ],
+      "secrets": [
+        { "name": "SLACK_BOT_TOKEN", "valueFrom": "<SSM_OR_SECRETSMANAGER_ARN>" },
+        { "name": "SLACK_SIGNING_SECRET", "valueFrom": "<SSM_OR_SECRETSMANAGER_ARN>" },
+        { "name": "LOGIC_CHANNEL_ID_MAIN", "valueFrom": "<SSM_OR_SECRETSMANAGER_ARN>" },
+        { "name": "LOGIC_CHANNEL_ID_TEST", "valueFrom": "<SSM_OR_SECRETSMANAGER_ARN>" },
+        { "name": "LOGIC_ADMIN_USER_IDS", "valueFrom": "<SSM_OR_SECRETSMANAGER_ARN>" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/logicbot",
+          "awslogs-region": "<AWS_REGION>",
+          "awslogs-stream-prefix": "ecs"
+        }
+      }
+    }
+  ]
+}
