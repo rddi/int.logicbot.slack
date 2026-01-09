@@ -89,7 +89,7 @@ jobs:
       - name: Terraform Init
         working-directory: infra
         run: |
-          terraform init \
+          terraform init -reconfigure \
             -backend-config="bucket=logicbot-terraform-state" \
             -backend-config="key=terraform.tfstate" \
             -backend-config="region=${{ secrets.AWS_REGION }}" \
