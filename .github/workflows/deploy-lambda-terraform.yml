@@ -58,28 +58,40 @@ jobs:
       - name: Bootstrap Terraform State (if needed)
         working-directory: infra/bootstrap
         run: |
-          # Check if S3 bucket exists
-          if ! aws s3 ls "s3://logicbot-terraform-state" 2>/dev/null; then
-            echo "State bucket doesn't exist. Creating state resources in ${{ secrets.AWS_REGION }}..."
+          BUCKET_NAME="logicbot-terraform-state"
+          LOCK_TABLE="logicbot-terraform-locks"
+
+          bucket_exists() {
+            aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null
+          }
+
+          if ! bucket_exists; then
+            echo "State bucket doesn't exist. Creating state bucket in ${{ secrets.AWS_REGION }}..."
             terraform init
             terraform apply -auto-approve \
               -var="aws_region=${{ secrets.AWS_REGION }}"
-            echo "State resources created successfully."
+            echo "State bucket created successfully."
           else
-            # Check bucket region
-            BUCKET_REGION=$(aws s3api get-bucket-location --bucket logicbot-terraform-state --query LocationConstraint --output text 2>/dev/null || echo "None")
+            BUCKET_REGION=$(aws s3api get-bucket-location --bucket "$BUCKET_NAME" --query LocationConstraint --output text 2>/dev/null || echo "None")
             if [ "$BUCKET_REGION" = "None" ] || [ -z "$BUCKET_REGION" ]; then
-              BUCKET_REGION="us-east-1"  # Default for us-east-1 (returns None)
+              BUCKET_REGION="us-east-1"
             fi
             if [ "$BUCKET_REGION" != "${{ secrets.AWS_REGION }}" ]; then
               echo "ERROR: Bucket exists in $BUCKET_REGION but AWS_REGION is set to ${{ secrets.AWS_REGION }}"
-              echo "To fix: Delete the bucket and let it be recreated, or update AWS_REGION secret to match bucket region"
-              echo "To delete: aws s3 rb s3://logicbot-terraform-state --force"
+              echo "Fix: delete the bucket or update AWS_REGION to match."
               exit 1
             fi
-            echo "State bucket exists in ${{ secrets.AWS_REGION }}. Skipping bootstrap."
+            echo "State bucket exists in ${{ secrets.AWS_REGION }}. Skipping bucket bootstrap."
           fi
-        continue-on-error: false
+
+          # Lock table is required for backend locking
+          if aws dynamodb describe-table --table-name "$LOCK_TABLE" >/dev/null 2>&1; then
+            echo "DynamoDB lock table exists: $LOCK_TABLE"
+          else
+            echo "ERROR: DynamoDB lock table missing: $LOCK_TABLE"
+            echo "Create it once (PAY_PER_REQUEST, hash key LockID), then rerun."
+            exit 1
+          fi
 
       - name: Terraform Init
         working-directory: infra
