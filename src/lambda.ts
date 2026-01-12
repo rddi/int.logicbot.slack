@@ -1,56 +1,63 @@
-// AWS Lambda entrypoint for Logic Bot
-// This file exports the Lambda handler that uses AwsLambdaReceiver
+// AWS Lambda entrypoint for Logic Bot (API Gateway HTTP API -> Lambda proxy)
+// Known-good pattern:
+// 1) respond to Slack url_verification immediately (no signature check)
+// 2) otherwise delegate to AwsLambdaReceiver/Bolt
+// 3) never crash without logging
 
-import { AwsLambdaReceiver } from '@slack/bolt';
-import { setAppReceiver } from './config';
-import type {
-  APIGatewayProxyHandlerV2,
-  APIGatewayProxyEventV2,
-  APIGatewayProxyResultV2,
-  Context,
-} from 'aws-lambda';
+import { AwsLambdaReceiver } from "@slack/bolt";
+import type { APIGatewayProxyHandlerV2, APIGatewayProxyResultV2 } from "aws-lambda";
+import { setAppReceiver } from "./config";
 
-// Create AWS Lambda receiver
-const receiver = new AwsLambdaReceiver({
-  signingSecret: process.env.SLACK_SIGNING_SECRET!,
-});
+// --- Validate env (do NOT log secrets) ---
+const signingSecret = process.env.SLACK_SIGNING_SECRET;
+if (!signingSecret) throw new Error("Missing SLACK_SIGNING_SECRET");
 
-// Set app with receiver BEFORE importing handlers
+const receiver = new AwsLambdaReceiver({ signingSecret });
+
+// IMPORTANT: set receiver before importing any handlers
 setAppReceiver(receiver);
+import "./index";
 
-// Import all handlers - they will register on the app with receiver
-import './index';
+// Use receiver.start() handler (more robust than toHandler across event shapes)
+const awsHandlerPromise = receiver.start();
 
-// Get the Bolt handler
-const boltHandler = receiver.toHandler();
+function decodeBody(event: any): string {
+  if (!event?.body) return "";
+  return event.isBase64Encoded
+    ? Buffer.from(event.body, "base64").toString("utf8")
+    : event.body;
+}
 
-// Wrapper handler that handles Slack URL verification before Bolt processing
-export const handler: APIGatewayProxyHandlerV2 = async (
-  event: APIGatewayProxyEventV2,
-  context: Context
-): Promise<APIGatewayProxyResultV2> => {
-  // Handle POST requests with url_verification in body
-  const rawBody = event.body
-  ? (event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body)
-  : '';
+export const handler: APIGatewayProxyHandlerV2 = async (event, context): Promise<APIGatewayProxyResultV2> => {
+  try {
+    // 1) Slack URL verification (Slack sends POST with JSON body)
+    const rawBody = decodeBody(event);
 
-  if (rawBody) {
-    try {
-      const body = JSON.parse(rawBody);
-      if (body.type === 'url_verification' && body.challenge) {
-        return {
-          statusCode: 200,
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ challenge: body.challenge }),
-        };
+    if (rawBody) {
+      try {
+        const parsed = JSON.parse(rawBody);
+        if (parsed?.type === "url_verification" && parsed?.challenge) {
+          return {
+            statusCode: 200,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ challenge: parsed.challenge }),
+          };
+        }
+      } catch {
+        // not JSON; fall through to Bolt
       }
-    } catch {
-      // not JSON; continue
     }
-  }
 
-  // All other requests go to Bolt handler
-  // AwsLambdaReceiver expects v1 events, so we need to convert or pass through
-  // The receiver should handle the conversion internally
-  return boltHandler(event as any, context, () => {}) as Promise<APIGatewayProxyResultV2>;
+    // 2) Delegate everything else to Bolt
+    const awsHandler = await awsHandlerPromise;
+    // receiver.start() returns a (event, context, callback) handler
+    return (await awsHandler(event as any, context as any, () => {})) as any;
+  } catch (err) {
+    console.error("Lambda handler error:", err);
+    return {
+      statusCode: 500,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message: "Internal Server Error" }),
+    };
+  }
 };

@@ -34,14 +34,13 @@ export const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 // Initialize Slack app
 // For Lambda, receiver will be set via setAppReceiver()
+// Initialize Slack app
 let appInstance: App | null = null;
 
 export function getApp(): App {
   if (!appInstance) {
-    // In Lambda, this means lambda.ts didn't call setAppReceiver() before importing handlers.
-    // In server/local mode, you should have an explicit entrypoint that creates the app.
     throw new Error(
-      'Slack App not initialised. In Lambda, call setAppReceiver(receiver) before importing handlers.'
+      "Slack App not initialised. In Lambda, lambda.ts must call setAppReceiver(receiver) before importing handlers."
     );
   }
   return appInstance;
@@ -49,19 +48,18 @@ export function getApp(): App {
 
 export function setAppReceiver(receiver: any) {
   if (appInstance) {
-    throw new Error('App already initialized. Receiver must be set before app creation.');
+    throw new Error("App already initialized. Receiver must be set before app creation.");
   }
   appInstance = new App({
     token: process.env.SLACK_BOT_TOKEN,
     signingSecret: process.env.SLACK_SIGNING_SECRET,
     logLevel: LogLevel.INFO,
     processBeforeResponse: true,
-    receiver: receiver,
+    receiver,
   });
 }
 
-// Export app as a Proxy that delegates to getApp()
-// This allows imports of `app` to work without eager initialization
+// Lazy export to preserve existing imports: `import { app } from './config'`
 export const app = new Proxy({} as App, {
   get(_target, prop) {
     return (getApp() as any)[prop];
