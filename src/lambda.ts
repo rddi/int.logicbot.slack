@@ -1,3 +1,4 @@
+console.log("🔥🔥🔥 LAMBDA CODE VERSION: 2026-01-12-CHALLENGE-FIX 🔥🔥🔥");
 // AWS Lambda entrypoint for Logic Bot (API Gateway HTTP API -> Lambda proxy)
 // Known-good pattern:
 // 1) respond to Slack url_verification immediately (no signature check)
