@@ -38,12 +38,11 @@ let appInstance: App | null = null;
 
 export function getApp(): App {
   if (!appInstance) {
-    appInstance = new App({
-      token: process.env.SLACK_BOT_TOKEN,
-      signingSecret: process.env.SLACK_SIGNING_SECRET,
-      logLevel: LogLevel.INFO,
-      processBeforeResponse: true,
-    });
+    // In Lambda, this means lambda.ts didn't call setAppReceiver() before importing handlers.
+    // In server/local mode, you should have an explicit entrypoint that creates the app.
+    throw new Error(
+      'Slack App not initialised. In Lambda, call setAppReceiver(receiver) before importing handlers.'
+    );
   }
   return appInstance;
 }
@@ -61,8 +60,10 @@ export function setAppReceiver(receiver: any) {
   });
 }
 
-// Default app instance (for server mode)
-export const app = getApp();
+// IMPORTANT:
+// Do NOT eagerly create the App at module load.
+// In Lambda mode, lambda.ts will call setAppReceiver(receiver) before importing handlers.
+// In local/server mode, callers should call getApp() explicitly (or create their own entrypoint).
 
 // Cache bot user ID / bot ID (set during startup)
 export let BOT_USER_ID: string | null = null;

@@ -29,40 +29,23 @@ export const handler: APIGatewayProxyHandlerV2 = async (
   event: APIGatewayProxyEventV2,
   context: Context
 ): Promise<APIGatewayProxyResultV2> => {
-  // Handle Slack URL verification (must happen before signature verification)
-  const method = event.requestContext.http.method;
-  
-  if (method === 'GET') {
-    // Parse query string for challenge parameter
-    const queryParams = event.queryStringParameters || {};
-    const challenge = queryParams.challenge;
-    
-    if (challenge) {
-      return {
-        statusCode: 200,
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ challenge }),
-      };
-    }
-  }
-
   // Handle POST requests with url_verification in body
-  if (event.body) {
+  const rawBody = event.body
+  ? (event.isBase64Encoded ? Buffer.from(event.body, 'base64').toString('utf8') : event.body)
+  : '';
+
+  if (rawBody) {
     try {
-      const body = JSON.parse(event.body);
+      const body = JSON.parse(rawBody);
       if (body.type === 'url_verification' && body.challenge) {
         return {
           statusCode: 200,
-          headers: {
-            'Content-Type': 'application/json',
-          },
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ challenge: body.challenge }),
         };
       }
-    } catch (e) {
-      // If body is not JSON, continue to Bolt handler
+    } catch {
+      // not JSON; continue
     }
   }
 
