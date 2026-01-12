@@ -60,6 +60,14 @@ export function setAppReceiver(receiver: any) {
   });
 }
 
+// Export app as a Proxy that delegates to getApp()
+// This allows imports of `app` to work without eager initialization
+export const app = new Proxy({} as App, {
+  get(_target, prop) {
+    return (getApp() as any)[prop];
+  },
+}) as App;
+
 // IMPORTANT:
 // Do NOT eagerly create the App at module load.
 // In Lambda mode, lambda.ts will call setAppReceiver(receiver) before importing handlers.

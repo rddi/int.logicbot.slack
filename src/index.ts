@@ -32,7 +32,7 @@ import { buildSolveDmBlocks, updateDmMessageStatus, buildPrivateAnswerDmBlocks, 
 // Helper functions are now imported from helpers modules above
 
 // Slash command handler
-app.command('/logic', async ({ command, ack, respond, client }) => {
+app.command('/logic', async ({ command, ack, respond, client }: any) => {
   await ack();
 
   const { channel_id, user_id, text } = command;
@@ -657,7 +657,7 @@ if (isAdmin(user_id)) {
 });
 
 // Reaction handler: OP reacts with :yes: to solve
-app.event('reaction_added', async ({ event, client }) => {
+app.event('reaction_added', async ({ event, client }: any) => {
   // Only process reactions in allowed channels
   if (!event.item?.channel || !isAllowedChannel(event.item.channel)) {
     return;
@@ -716,7 +716,7 @@ app.event('reaction_added', async ({ event, client }) => {
 
     // Find the exact message that was reacted to
     const reactedMessage = threadReplies.messages.find(
-      (msg) => msg.ts === reactedMessageTs
+      (msg: any) => msg.ts === reactedMessageTs
     );
 
     if (!reactedMessage) {
@@ -882,7 +882,7 @@ app.event('reaction_added', async ({ event, client }) => {
 });
 
 // Button action handler: Confirm solve
-app.action('confirm_solve', async ({ action, ack, client }) => {
+app.action('confirm_solve', async ({ action, ack, client }: any) => {
   await ack();
 
   if (action.type !== 'button') return;
@@ -975,7 +975,7 @@ app.action('confirm_solve', async ({ action, ack, client }) => {
 });
 
 // Button action handler: Cancel solve
-app.action('cancel_solve', async ({ action, ack, client }) => {
+app.action('cancel_solve', async ({ action, ack, client }: any) => {
   await ack();
   if (action.type !== 'button') return;
 
@@ -997,7 +997,7 @@ app.action('cancel_solve', async ({ action, ack, client }) => {
 });
 
 // Private answer submission: Button handler to open modal
-app.action('submit_private_answer', async ({ action, ack, body, client }) => {
+app.action('submit_private_answer', async ({ action, ack, body, client }: any) => {
   await ack();
 
   if (action.type !== 'button') return;
@@ -1061,7 +1061,7 @@ app.action('submit_private_answer', async ({ action, ack, body, client }) => {
 });
 
 // Private answer submission: Modal submit handler
-app.view('private_answer_modal', async ({ ack, view, client }) => {
+app.view('private_answer_modal', async ({ ack, view, client }: any) => {
   await ack();
 
   try {
@@ -1160,7 +1160,7 @@ app.view('private_answer_modal', async ({ ack, view, client }) => {
 });
 
 // Private answer: Confirm solve handler
-app.action('confirm_private_solve', async ({ action, ack, client }) => {
+app.action('confirm_private_solve', async ({ action, ack, client }: any) => {
   await ack();
 
   if (action.type !== 'button') return;
@@ -1253,7 +1253,7 @@ app.action('confirm_private_solve', async ({ action, ack, client }) => {
 });
 
 // Private answer: Cancel solve handler
-app.action('cancel_private_solve', async ({ action, ack, client }) => {
+app.action('cancel_private_solve', async ({ action, ack, client }: any) => {
   await ack();
   if (action.type !== 'button') return;
 
@@ -1282,7 +1282,7 @@ app.action('cancel_private_solve', async ({ action, ack, client }) => {
 });
 
 // Edit question: Button handler (OP only)
-app.action('edit_question', async ({ action, ack, body, client }) => {
+app.action('edit_question', async ({ action, ack, body, client }: any) => {
   await ack();
 
   if (action.type !== 'button') return;
@@ -1382,7 +1382,7 @@ app.action('edit_question', async ({ action, ack, body, client }) => {
 });
 
 // Edit question: Modal submit handler
-app.view('edit_question_modal', async ({ ack, view, client, body }) => {
+app.view('edit_question_modal', async ({ ack, view, client, body }: any) => {
   await ack();
 
   try {
@@ -1662,7 +1662,7 @@ app.view('edit_question_modal', async ({ ack, view, client, body }) => {
 });
 
 // Close round: Button handler (OP only)
-app.action('close_round', async ({ action, ack, body, client }) => {
+app.action('close_round', async ({ action, ack, body, client }: any) => {
   await ack();
 
   if (action.type !== 'button') return;
@@ -1751,7 +1751,7 @@ app.action('close_round', async ({ action, ack, body, client }) => {
 });
 
 // View answer: Button handler to show answer in modal
-app.action('view_answer', async ({ action, ack, body, client }) => {
+app.action('view_answer', async ({ action, ack, body, client }: any) => {
   await ack();
 
   if (action.type !== 'button') return;
