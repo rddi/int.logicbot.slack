@@ -7,6 +7,13 @@ import { ensureBotIdentity } from './slack';
 // Cache for scoreboard message TS per channel
 const scoreboardMessageCache: Record<string, string> = {};
 
+const padCenter = (text: string, width: number) => {
+  const spaces = width - text.length;
+  const leftSpaces = Math.floor(spaces / 2);
+  const rightSpaces = spaces - leftSpaces;
+  return ' '.repeat(leftSpaces) + text + ' '.repeat(rightSpaces);
+};
+
 // Format scoreboard data into display blocks
 async function formatScoreboardBlocks(data: ScoreboardData, channelId: string): Promise<any[]> {
   const blocks: any[] = [
@@ -101,8 +108,9 @@ async function formatScoreboardBlocks(data: ScoreboardData, channelId: string): 
     const questionsWidth = 4;
 
     // Build table header
+    // Use actual emoji Unicode characters since code blocks don't render emoji codes
     const separator = `${'─'.repeat(nameWidth)}┼${'─'.repeat(scoreWidth + 2)}┼${'─'.repeat(questionsWidth + 2)}`;
-    const headerRow = `${':bust_in_silhouette:'.padEnd(nameWidth)} │ ${':bulb:'.padStart(scoreWidth)} │ ${':question:'.padStart(questionsWidth)}`;
+    const headerRow = `${padCenter('👤', nameWidth)} │ ${padCenter('💡', scoreWidth)} │ ${padCenter('❓', questionsWidth)}`;
 
     // Build table rows
     const tableRows = resolvedEntries
