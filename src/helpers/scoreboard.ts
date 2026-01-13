@@ -90,25 +90,40 @@ async function formatScoreboardBlocks(data: ScoreboardData, channelId: string): 
     // Sort by score (descending)
     resolvedEntries.sort((a, b) => b.score - a.score);
 
-    // Build text for this year
-    const yearText = resolvedEntries
+    // Build table for this year using code block for monospace formatting
+    // Calculate column widths
+    const maxNameLength = Math.max(
+      'Player'.length,
+      ...resolvedEntries.map((e) => e.displayName.length)
+    );
+    const nameWidth = Math.max(20, Math.min(maxNameLength + 2, 35));
+    const scoreWidth = 8;
+    const questionsWidth = 10;
+
+    // Build table header
+    const separator = `${'─'.repeat(nameWidth)}┼${'─'.repeat(scoreWidth + 2)}┼${'─'.repeat(questionsWidth + 2)}`;
+    const headerRow = `${'Player'.padEnd(nameWidth)} │ ${'Points'.padStart(scoreWidth)} │ ${'Questions'.padStart(questionsWidth)}`;
+
+    // Build table rows
+    const tableRows = resolvedEntries
       .map(({ displayName, score, questions }) => {
-        const parts: string[] = [];
-        if (score > 0) {
-          parts.push(`${score} point${score !== 1 ? 's' : ''}`);
-        }
-        if (questions > 0) {
-          parts.push(`${questions} question${questions !== 1 ? 's' : ''}`);
-        }
-        return `  ${displayName}: ${parts.join(', ')}`;
+        // Truncate display name if too long
+        const truncatedName =
+          displayName.length > nameWidth - 2
+            ? displayName.substring(0, nameWidth - 5) + '...'
+            : displayName;
+        return `${truncatedName.padEnd(nameWidth)} │ ${score.toString().padStart(scoreWidth)} │ ${questions.toString().padStart(questionsWidth)}`;
       })
       .join('\n');
+
+    // Combine into table format
+    const tableText = `\`\`\`\n${headerRow}\n${separator}\n${tableRows}\n\`\`\``;
 
     blocks.push({
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: yearText,
+        text: tableText,
       },
     });
 
