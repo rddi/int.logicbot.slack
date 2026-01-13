@@ -114,7 +114,7 @@ async function formatScoreboardBlocks(data: ScoreboardData, channelId: string): 
     // Build table header
     // Use actual emoji Unicode characters since code blocks don't render emoji codes
     const separator = `┼─${'─'.repeat(nameWidth)}─┼─${'─'.repeat(scoreWidth)}─┼─${'─'.repeat(questionsWidth)}─┼`;
-    const headerRow = `│ ${padCenter('👤', nameWidth, 1)} │ ${padCenter('💡', scoreWidth, 1)} │ ${padCenter('❓', questionsWidth, 1)} │`;
+    const headerRow = `│ ${padCenter('Player', nameWidth)} │ ${padCenter('As', scoreWidth)} │ ${padCenter('Qs', questionsWidth)} │`;
 
     // Build table rows
     const tableRows = resolvedEntries
