@@ -1,0 +1,29 @@
+{
+  "Version": "2012-10-17",
+  "Id": "key-consolepolicy-3",
+  "Statement": [
+    {
+      "Sid": "Enable IAM User Permissions",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::247995214643:root"
+      },
+      "Action": "kms:*",
+      "Resource": "*"
+    },
+    {
+      "Sid": "AllowLogicbotLambdaRole",
+      "Effect": "Allow",
+      "Principal": {
+        "AWS": "arn:aws:iam::247995214643:role/logicbot-lambda-role"
+      },
+      "Action": [
+        "kms:Decrypt",
+        "kms:Encrypt",
+        "kms:GenerateDataKey",
+        "kms:DescribeKey"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "version": "2.0",
+  "routeKey": "POST /slack/events",
+  "rawPath": "/slack/events",
+  "requestContext": { "http": { "method": "POST" } },
+  "headers": { "content-type": "application/json" },
+  "body": "{\"type\":\"url_verification\",\"challenge\":\"direct\"}",
+  "isBase64Encoded": false
+}

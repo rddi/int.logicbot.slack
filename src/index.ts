@@ -238,8 +238,8 @@ if (isAdmin(user_id)) {
         statsText += `\n*Total: ${totalParts.join(', ')}*`;
       }
 
-      await client.chat.postMessage({
-        channel: channel_id,
+      await respond({
+        response_type: 'ephemeral',
         text: statsText,
       });
     } catch (error) {
