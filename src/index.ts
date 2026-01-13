@@ -87,61 +87,11 @@ if (isAdmin(user_id)) {
 
   if (commandTextLower === 'scoreboard') {
     try {
+      // Ensure scoreboard exists and is up to date
       await getOrCreateScoreboard(channel_id);
-      const data = await getScoreboardData(channel_id);
-
-      // Get all years from both scores and questions, sort them (newest first)
-      const allYears = new Set([
-        ...Object.keys(data.scoresByYear),
-        ...Object.keys(data.questionsByYear)
-      ]);
-      const years = Array.from(allYears).sort((a, b) => parseInt(b) - parseInt(a));
-
-      let scoreboardText = '*Scoreboard*\n\n';
-
-      if (years.length === 0) {
-        scoreboardText += 'No scores yet.';
-      } else {
-        // Display scores and questions by year
-        for (const year of years) {
-          const yearScores = data.scoresByYear[year] || {};
-          const yearQuestions = data.questionsByYear[year] || {};
-          
-          // Get all users who have scores or questions in this year
-          const allUsers = new Set([
-            ...Object.keys(yearScores),
-            ...Object.keys(yearQuestions)
-          ]);
-
-          if (allUsers.size === 0) continue;
-
-          scoreboardText += `*${year}*\n`;
-          
-          // Combine scores and questions, then sort by score (descending)
-          const entries = Array.from(allUsers).map(userId => ({
-            userId,
-            score: yearScores[userId] || 0,
-            questions: yearQuestions[userId] || 0
-          })).sort((a, b) => b.score - a.score);
-
-          for (const { userId, score, questions } of entries) {
-            try {
-              const userInfo = await client.users.info({ user: userId });
-              const displayName = userInfo.user?.real_name || userInfo.user?.name || userId;
-              const questionText = questions > 0 ? ` (${questions} question${questions !== 1 ? 's' : ''})` : '';
-              scoreboardText += `  ${displayName}: ${score} point${score !== 1 ? 's' : ''}${questionText}\n`;
-            } catch {
-              const questionText = questions > 0 ? ` (${questions} question${questions !== 1 ? 's' : ''})` : '';
-              scoreboardText += `  <@${userId}>: ${score} point${score !== 1 ? 's' : ''}${questionText}\n`;
-            }
-          }
-          scoreboardText += '\n';
-        }
-      }
-
-      await client.chat.postMessage({
-        channel: channel_id,
-        text: scoreboardText,
+      await respond({
+        response_type: 'ephemeral',
+        text: 'Scoreboard is pinned at the top of the channel. It updates automatically when scores change.',
       });
     } catch (error) {
       console.error('Error showing scoreboard:', error);

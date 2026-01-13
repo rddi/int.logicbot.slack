@@ -4,9 +4,156 @@ import { app } from '../config';
 import { ScoreboardData } from '../types';
 import { ensureBotIdentity } from './slack';
 
-// Get or create scoreboard message
+// Cache for scoreboard message TS per channel
+const scoreboardMessageCache: Record<string, string> = {};
+
+// Format scoreboard data into display blocks
+async function formatScoreboardBlocks(data: ScoreboardData, channelId: string): Promise<any[]> {
+  const blocks: any[] = [
+    {
+      type: 'header',
+      text: {
+        type: 'plain_text',
+        text: '🏆 Scoreboard',
+        emoji: true,
+      },
+    },
+    {
+      type: 'divider',
+    },
+  ];
+
+  // Get all years from both scores and questions, sort them (newest first)
+  const allYears = new Set([
+    ...Object.keys(data.scoresByYear || {}),
+    ...Object.keys(data.questionsByYear || {}),
+  ]);
+  const years = Array.from(allYears).sort((a, b) => parseInt(b) - parseInt(a));
+
+  if (years.length === 0) {
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: '_No scores yet._',
+      },
+    });
+    return blocks;
+  }
+
+  // Display scores and questions by year
+  for (const year of years) {
+    const yearScores = data.scoresByYear?.[year] || {};
+    const yearQuestions = data.questionsByYear?.[year] || {};
+
+    // Get all users who have scores or questions in this year
+    const allUsers = new Set([
+      ...Object.keys(yearScores),
+      ...Object.keys(yearQuestions),
+    ]);
+
+    if (allUsers.size === 0) continue;
+
+    // Add year header
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `*${year}*`,
+      },
+    });
+
+    // Combine scores and questions, then get user info
+    const entryPromises = Array.from(allUsers).map(async (userId) => {
+      try {
+        const userInfo = await app.client.users.info({ user: userId });
+        const displayName = userInfo.user?.real_name || userInfo.user?.name || userId;
+        return {
+          userId,
+          displayName,
+          score: yearScores[userId] || 0,
+          questions: yearQuestions[userId] || 0,
+        };
+      } catch {
+        return {
+          userId,
+          displayName: `<@${userId}>`,
+          score: yearScores[userId] || 0,
+          questions: yearQuestions[userId] || 0,
+        };
+      }
+    });
+
+    // Resolve all user info promises
+    const resolvedEntries = await Promise.all(entryPromises);
+
+    // Sort by score (descending)
+    resolvedEntries.sort((a, b) => b.score - a.score);
+
+    // Build text for this year
+    const yearText = resolvedEntries
+      .map(({ displayName, score, questions }) => {
+        const parts: string[] = [];
+        if (score > 0) {
+          parts.push(`${score} point${score !== 1 ? 's' : ''}`);
+        }
+        if (questions > 0) {
+          parts.push(`${questions} question${questions !== 1 ? 's' : ''}`);
+        }
+        return `  ${displayName}: ${parts.join(', ')}`;
+      })
+      .join('\n');
+
+    blocks.push({
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: yearText,
+      },
+    });
+
+    blocks.push({
+      type: 'divider',
+    });
+  }
+
+  // Add last updated timestamp
+  if (data.lastUpdated) {
+    const updatedDate = new Date(data.lastUpdated);
+    blocks.push({
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: `_Last updated: ${updatedDate.toLocaleString()}_`,
+        },
+      ],
+    });
+  }
+
+  return blocks;
+}
+
+// Get or create scoreboard message (now uses formatted blocks)
 export async function getOrCreateScoreboard(channelId: string): Promise<string> {
   try {
+    // Check cache first
+    if (scoreboardMessageCache[channelId]) {
+      try {
+        // Verify the message still exists
+        await app.client.conversations.history({
+          channel: channelId,
+          latest: scoreboardMessageCache[channelId],
+          limit: 1,
+          inclusive: true,
+        });
+        return scoreboardMessageCache[channelId];
+      } catch {
+        // Message doesn't exist, clear cache and recreate
+        delete scoreboardMessageCache[channelId];
+      }
+    }
+
     // Get pinned messages
     const pins = await app.client.pins.list({ channel: channelId });
 
@@ -17,10 +164,16 @@ export async function getOrCreateScoreboard(channelId: string): Promise<string> 
       for (const item of pins.items) {
         // Check if item is a message type and has message property
         if ('message' in item && item.message) {
-          const message = item.message as any; // Type assertion needed due to Slack API types
+          const message = item.message as any;
           if (message.user === botUserId) {
             const text = message.text || '';
-            if (text.includes('"scores"') || text.includes('Scoreboard')) {
+            const blocks = message.blocks || [];
+            // Check if it's our scoreboard (has "Scoreboard" header or contains scoreboard blocks)
+            if (
+              text.includes('Scoreboard') ||
+              (blocks.length > 0 && blocks[0]?.text?.text?.includes('Scoreboard'))
+            ) {
+              scoreboardMessageCache[channelId] = message.ts!;
               return message.ts!;
             }
           }
@@ -28,75 +181,130 @@ export async function getOrCreateScoreboard(channelId: string): Promise<string> 
       }
     }
 
-    // Create new scoreboard
-    const result = await app.client.chat.postMessage({
-      channel: channelId,
-      text: 'Scoreboard',
-    });
-
+    // Create new scoreboard with initial data
     const scoreboardData: ScoreboardData = {
       scoresByYear: {},
       questionsByYear: {},
       lastUpdated: new Date().toISOString(),
     };
 
-    // Update with JSON data
-    await app.client.chat.update({
+    const blocks = await formatScoreboardBlocks(scoreboardData, channelId);
+
+    const result = await app.client.chat.postMessage({
       channel: channelId,
-      ts: result.ts!,
-      text: `Scoreboard\n\`\`\`json\n${JSON.stringify(scoreboardData, null, 2)}\n\`\`\``,
+      text: 'Scoreboard',
+      blocks,
     });
+
+    if (!result.ts) {
+      throw new Error('Failed to create scoreboard message (missing ts)');
+    }
 
     // Pin the message
     await app.client.pins.add({
       channel: channelId,
-      timestamp: result.ts!,
+      timestamp: result.ts,
     });
 
-    return result.ts!;
+    scoreboardMessageCache[channelId] = result.ts;
+    return result.ts;
   } catch (error) {
     console.error('Error getting/creating scoreboard:', error);
     throw error;
   }
 }
 
-// Get scoreboard data
+// Get scoreboard data (now stored separately, not in message)
+// We'll use a hidden message or store in a separate location
+// For now, we'll parse from a pinned message that stores JSON
 export async function getScoreboardData(channelId: string): Promise<ScoreboardData> {
   try {
-    const scoreboardTs = await getOrCreateScoreboard(channelId);
-    const result = await app.client.conversations.history({
-      channel: channelId,
-      latest: scoreboardTs,
-      limit: 1,
-      inclusive: true,
-    });
+    // Try to get from pinned messages (look for JSON data message)
+    const pins = await app.client.pins.list({ channel: channelId });
+    const { botUserId } = await ensureBotIdentity();
 
-    if (!result.messages || result.messages.length === 0) {
-      return { scoresByYear: {}, questionsByYear: {}, lastUpdated: new Date().toISOString() };
+    if (pins.items) {
+      for (const item of pins.items) {
+        if ('message' in item && item.message) {
+          const message = item.message as any;
+          if (message.user === botUserId) {
+            const text = message.text || '';
+            // Look for JSON data in code block
+            const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
+            if (jsonMatch) {
+              try {
+                return JSON.parse(jsonMatch[1]);
+              } catch {
+                continue;
+              }
+            }
+          }
+        }
+      }
     }
 
-    const message = result.messages[0];
-    const text = message.text || '';
-
-    // Extract JSON from code block
-    const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[1]);
-    }
-
-    // Fallback: try parsing entire message
-    try {
-      return JSON.parse(text);
-    } catch {
-      return { scoresByYear: {}, questionsByYear: {}, lastUpdated: new Date().toISOString() };
-    }
+    // If no data found, return empty scoreboard
+    return { scoresByYear: {}, questionsByYear: {}, lastUpdated: new Date().toISOString() };
   } catch (error) {
     console.error('Error getting scoreboard data:', error);
     return { scoresByYear: {}, questionsByYear: {}, lastUpdated: new Date().toISOString() };
   }
 }
 
-// Update scoreboard
+// Store scoreboard data in a hidden pinned message
+async function storeScoreboardData(channelId: string, data: ScoreboardData): Promise<void> {
+  try {
+    const { botUserId } = await ensureBotIdentity();
+    const pins = await app.client.pins.list({ channel: channelId });
+
+    // Look for existing data message
+    let dataMessageTs: string | null = null;
+    if (pins.items) {
+      for (const item of pins.items) {
+        if ('message' in item && item.message) {
+          const message = item.message as any;
+          if (message.user === botUserId) {
+            const text = message.text || '';
+            if (text.includes('"scores"') && text.includes('"questions"')) {
+              dataMessageTs = message.ts!;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    const dataText = `Scoreboard Data\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
+
+    if (dataMessageTs) {
+      // Update existing data message
+      await app.client.chat.update({
+        channel: channelId,
+        ts: dataMessageTs,
+        text: dataText,
+      });
+    } else {
+      // Create new data message
+      const result = await app.client.chat.postMessage({
+        channel: channelId,
+        text: dataText,
+      });
+
+      if (result.ts) {
+        // Pin the data message
+        await app.client.pins.add({
+          channel: channelId,
+          timestamp: result.ts,
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Error storing scoreboard data:', error);
+    // Don't throw - data storage is secondary to display
+  }
+}
+
+// Update scoreboard (updates both display and data storage)
 export async function updateScoreboard(
   channelId: string,
   updateFn: (data: ScoreboardData) => ScoreboardData
@@ -107,11 +315,17 @@ export async function updateScoreboard(
     const updatedData = updateFn(currentData);
     updatedData.lastUpdated = new Date().toISOString();
 
+    // Update the display message with formatted blocks
+    const blocks = await formatScoreboardBlocks(updatedData, channelId);
     await app.client.chat.update({
       channel: channelId,
       ts: scoreboardTs,
-      text: `Scoreboard\n\`\`\`json\n${JSON.stringify(updatedData, null, 2)}\n\`\`\``,
+      text: 'Scoreboard',
+      blocks,
     });
+
+    // Store the data in a separate hidden message for persistence
+    await storeScoreboardData(channelId, updatedData);
   } catch (error) {
     console.error('Error updating scoreboard:', error);
     throw error;
