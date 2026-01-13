@@ -97,12 +97,12 @@ async function formatScoreboardBlocks(data: ScoreboardData, channelId: string): 
       ...resolvedEntries.map((e) => e.displayName.length)
     );
     const nameWidth = Math.max(20, Math.min(maxNameLength + 2, 35));
-    const scoreWidth = 8;
-    const questionsWidth = 10;
+    const scoreWidth = 4;
+    const questionsWidth = 4;
 
     // Build table header
     const separator = `${'─'.repeat(nameWidth)}┼${'─'.repeat(scoreWidth + 2)}┼${'─'.repeat(questionsWidth + 2)}`;
-    const headerRow = `${'Player'.padEnd(nameWidth)} │ ${'Points'.padStart(scoreWidth)} │ ${'Questions'.padStart(questionsWidth)}`;
+    const headerRow = `${':bust_in_silhouette:'.padEnd(nameWidth)} │ ${':bulb:'.padStart(scoreWidth)} │ ${':question:'.padStart(questionsWidth)}`;
 
     // Build table rows
     const tableRows = resolvedEntries
