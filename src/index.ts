@@ -24,7 +24,8 @@ import {
   getYearFromTimestamp, 
   addPoints,
   addQuestion,
-  removeQuestion
+  removeQuestion,
+  formatScoreboardText
 } from './helpers/scoreboard';
 import { openDmChannel, getPermalink, ensureBotIdentity } from './helpers/slack';
 import { buildSolveDmBlocks, updateDmMessageStatus, buildPrivateAnswerDmBlocks, sendWinnerSummary } from './helpers/messages';
@@ -89,9 +90,12 @@ if (isAdmin(user_id)) {
     try {
       // Ensure scoreboard exists and is up to date
       await getOrCreateScoreboard(channel_id);
+      const data = await getScoreboardData(channel_id);
+      const scoreboardText = await formatScoreboardText(data, channel_id);
+      
       await respond({
         response_type: 'ephemeral',
-        text: 'Scoreboard is pinned at the top of the channel. It updates automatically when scores change.',
+        text: scoreboardText,
       });
     } catch (error) {
       console.error('Error showing scoreboard:', error);

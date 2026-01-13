@@ -1,8 +1,36 @@
 // Scoreboard-related helper functions
 
+import * as crypto from 'crypto';
 import { app } from '../config';
 import { ScoreboardData } from '../types';
 import { ensureBotIdentity } from './slack';
+
+// Encryption key for scoreboard data (use env var or default)
+const ENCRYPTION_KEY = process.env.SCOREBOARD_ENCRYPTION_KEY || 'logicbot-scoreboard-key-default-change-in-production';
+const ALGORITHM = 'aes-256-cbc';
+
+// Encrypt JSON data
+function encryptData(data: string): string {
+  const iv = crypto.randomBytes(16);
+  const cipher = crypto.createCipheriv(ALGORITHM, Buffer.from(ENCRYPTION_KEY.padEnd(32).substring(0, 32)), iv);
+  let encrypted = cipher.update(data, 'utf8', 'hex');
+  encrypted += cipher.final('hex');
+  return iv.toString('hex') + ':' + encrypted;
+}
+
+// Decrypt JSON data
+function decryptData(encryptedData: string): string {
+  const parts = encryptedData.split(':');
+  if (parts.length !== 2) {
+    throw new Error('Invalid encrypted data format');
+  }
+  const iv = Buffer.from(parts[0], 'hex');
+  const encrypted = parts[1];
+  const decipher = crypto.createDecipheriv(ALGORITHM, Buffer.from(ENCRYPTION_KEY.padEnd(32).substring(0, 32)), iv);
+  let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+  decrypted += decipher.final('utf8');
+  return decrypted;
+}
 
 // Cache for scoreboard message TS per channel
 const scoreboardMessageCache: Record<string, string> = {};
@@ -138,10 +166,6 @@ async function formatScoreboardBlocks(data: ScoreboardData, channelId: string): 
         text: tableText,
       },
     });
-
-    blocks.push({
-      type: 'divider',
-    });
   }
 
   // Add last updated timestamp
@@ -159,6 +183,104 @@ async function formatScoreboardBlocks(data: ScoreboardData, channelId: string): 
   }
 
   return blocks;
+}
+
+// Format scoreboard data as text (for command output)
+export async function formatScoreboardText(data: ScoreboardData, channelId: string): Promise<string> {
+  // Get all years from both scores and questions, sort them (newest first)
+  const allYears = new Set([
+    ...Object.keys(data.scoresByYear || {}),
+    ...Object.keys(data.questionsByYear || {}),
+  ]);
+  const years = Array.from(allYears).sort((a, b) => parseInt(b) - parseInt(a));
+
+  if (years.length === 0) {
+    return '🏆 *Scoreboard*\n\n_No scores yet._';
+  }
+
+  let text = '🏆 *Scoreboard*\n\n';
+
+  // Display scores and questions by year
+  for (const year of years) {
+    const yearScores = data.scoresByYear?.[year] || {};
+    const yearQuestions = data.questionsByYear?.[year] || {};
+
+    // Get all users who have scores or questions in this year
+    const allUsers = new Set([
+      ...Object.keys(yearScores),
+      ...Object.keys(yearQuestions),
+    ]);
+
+    if (allUsers.size === 0) continue;
+
+    text += `*${year}*\n`;
+
+    // Combine scores and questions, then get user info
+    const entryPromises = Array.from(allUsers).map(async (userId) => {
+      try {
+        const userInfo = await app.client.users.info({ user: userId });
+        const displayName = userInfo.user?.real_name || userInfo.user?.name || userId;
+        return {
+          userId,
+          displayName,
+          score: yearScores[userId] || 0,
+          questions: yearQuestions[userId] || 0,
+        };
+      } catch {
+        return {
+          userId,
+          displayName: `<@${userId}>`,
+          score: yearScores[userId] || 0,
+          questions: yearQuestions[userId] || 0,
+        };
+      }
+    });
+
+    // Resolve all user info promises
+    const resolvedEntries = await Promise.all(entryPromises);
+
+    // Sort by score (descending)
+    resolvedEntries.sort((a, b) => b.score - a.score);
+
+    // Build table for this year using code block for monospace formatting
+    // Calculate column widths
+    const maxNameLength = Math.max(
+      'Player'.length,
+      ...resolvedEntries.map((e) => e.displayName.length)
+    );
+    const nameWidth = Math.max(20, Math.min(maxNameLength + 2, 35));
+    const scoreWidth = 4;
+    const questionsWidth = 4;
+
+    // Build table header
+    const separator = `┼─${'─'.repeat(nameWidth)}─┼─${'─'.repeat(scoreWidth)}─┼─${'─'.repeat(questionsWidth)}─┼`;
+    const headerRow = `│ ${padCenter('Player', nameWidth)} │ ${padCenter('As', scoreWidth)} │ ${padCenter('Qs', questionsWidth)} │`;
+
+    // Build table rows
+    const tableRows = resolvedEntries
+      .map(({ displayName, score, questions }) => {
+        // Truncate display name if too long
+        const truncatedName =
+          displayName.length > nameWidth - 2
+            ? displayName.substring(0, nameWidth - 5) + '...'
+            : displayName;
+        return `│ ${truncatedName.padEnd(nameWidth)} │ ${score.toString().padStart(scoreWidth)} │ ${questions.toString().padStart(questionsWidth)} │`;
+      })
+      .join('\n');
+
+    // Combine into table format
+    const tableText = `\`\`\`\n${separator}\n${headerRow}\n${separator}\n${tableRows}\n${separator}\n\`\`\``;
+
+    text += tableText + '\n\n';
+  }
+
+  // Add last updated timestamp
+  if (data.lastUpdated) {
+    const updatedDate = new Date(data.lastUpdated);
+    text += `_Last updated: ${updatedDate.toLocaleString()}_`;
+  }
+
+  return text;
 }
 
 // Get or create scoreboard message (now uses formatted blocks)
@@ -241,12 +363,10 @@ export async function getOrCreateScoreboard(channelId: string): Promise<string> 
   }
 }
 
-// Get scoreboard data (now stored separately, not in message)
-// We'll use a hidden message or store in a separate location
-// For now, we'll parse from a pinned message that stores JSON
+// Get scoreboard data (now stored separately, encrypted)
 export async function getScoreboardData(channelId: string): Promise<ScoreboardData> {
   try {
-    // Try to get from pinned messages (look for JSON data message)
+    // Try to get from pinned messages (look for encrypted data message)
     const pins = await app.client.pins.list({ channel: channelId });
     const { botUserId } = await ensureBotIdentity();
 
@@ -256,7 +376,20 @@ export async function getScoreboardData(channelId: string): Promise<ScoreboardDa
           const message = item.message as any;
           if (message.user === botUserId) {
             const text = message.text || '';
-            // Look for JSON data in code block
+            
+            // Try to find encrypted data in code block
+            const codeBlockMatch = text.match(/```\n([\s\S]*?)\n```/);
+            if (codeBlockMatch && codeBlockMatch[1].includes(':')) {
+              // Likely encrypted data (format: iv:encrypted)
+              try {
+                const decrypted = decryptData(codeBlockMatch[1].trim());
+                return JSON.parse(decrypted);
+              } catch {
+                // Not encrypted or decryption failed, try old format
+              }
+            }
+            
+            // Fallback: try old JSON format (for backward compatibility)
             const jsonMatch = text.match(/```json\n([\s\S]*?)\n```/);
             if (jsonMatch) {
               try {
@@ -278,7 +411,7 @@ export async function getScoreboardData(channelId: string): Promise<ScoreboardDa
   }
 }
 
-// Store scoreboard data in a hidden pinned message
+// Store scoreboard data in a hidden pinned message (encrypted)
 async function storeScoreboardData(channelId: string, data: ScoreboardData): Promise<void> {
   try {
     const { botUserId } = await ensureBotIdentity();
@@ -292,7 +425,8 @@ async function storeScoreboardData(channelId: string, data: ScoreboardData): Pro
           const message = item.message as any;
           if (message.user === botUserId) {
             const text = message.text || '';
-            if (text.includes('"scores"') && text.includes('"questions"')) {
+            // Look for encrypted data marker or old format
+            if (text.includes('Scoreboard Data') || (text.includes('"scores"') && text.includes('"questions"'))) {
               dataMessageTs = message.ts!;
               break;
             }
@@ -301,7 +435,10 @@ async function storeScoreboardData(channelId: string, data: ScoreboardData): Pro
       }
     }
 
-    const dataText = `Scoreboard Data\n\`\`\`json\n${JSON.stringify(data, null, 2)}\n\`\`\``;
+    // Encrypt the JSON data
+    const jsonData = JSON.stringify(data);
+    const encryptedData = encryptData(jsonData);
+    const dataText = `Scoreboard Data\n\`\`\`\n${encryptedData}\n\`\`\``;
 
     if (dataMessageTs) {
       // Update existing data message
