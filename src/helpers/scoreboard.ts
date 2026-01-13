@@ -109,8 +109,8 @@ async function formatScoreboardBlocks(data: ScoreboardData, channelId: string): 
 
     // Build table header
     // Use actual emoji Unicode characters since code blocks don't render emoji codes
-    const separator = `${'─'.repeat(nameWidth)}┼${'─'.repeat(scoreWidth + 2)}┼${'─'.repeat(questionsWidth + 2)}`;
-    const headerRow = `${padCenter('👤', nameWidth)} │ ${padCenter('💡', scoreWidth)} │ ${padCenter('❓', questionsWidth)}`;
+    const separator = `┼-${'─'.repeat(nameWidth)}-┼-${'─'.repeat(scoreWidth + 2)}-┼-${'─'.repeat(questionsWidth + 2)}-┼`;
+    const headerRow = `│ ${padCenter('👤', nameWidth)} │ ${padCenter('💡', scoreWidth)} │ ${padCenter('❓', questionsWidth)} │`;
 
     // Build table rows
     const tableRows = resolvedEntries
@@ -120,12 +120,12 @@ async function formatScoreboardBlocks(data: ScoreboardData, channelId: string): 
           displayName.length > nameWidth - 2
             ? displayName.substring(0, nameWidth - 5) + '...'
             : displayName;
-        return `${truncatedName.padEnd(nameWidth)} │ ${score.toString().padStart(scoreWidth)} │ ${questions.toString().padStart(questionsWidth)}`;
+        return `│ ${truncatedName.padEnd(nameWidth)} │ ${score.toString().padStart(scoreWidth)} │ ${questions.toString().padStart(questionsWidth)}  │`;
       })
       .join('\n');
 
     // Combine into table format
-    const tableText = `\`\`\`\n${headerRow}\n${separator}\n${tableRows}\n\`\`\``;
+    const tableText = `\`\`\`\n${separator}\n${headerRow}\n${separator}\n${tableRows}\n${separator}\n\`\`\``;
 
     blocks.push({
       type: 'section',
