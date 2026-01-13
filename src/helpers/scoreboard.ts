@@ -7,8 +7,12 @@ import { ensureBotIdentity } from './slack';
 // Cache for scoreboard message TS per channel
 const scoreboardMessageCache: Record<string, string> = {};
 
-const padCenter = (text: string, width: number) => {
-  const spaces = width - text.length;
+const padCenter = (text: string, width: number, forceTextLength: null | number = null) => {
+  let textLength = text.length;
+  if (forceTextLength) {
+    textLength = forceTextLength;
+  }
+  const spaces = width - textLength;
   const leftSpaces = Math.floor(spaces / 2);
   const rightSpaces = spaces - leftSpaces;
   return ' '.repeat(leftSpaces) + text + ' '.repeat(rightSpaces);
@@ -110,7 +114,7 @@ async function formatScoreboardBlocks(data: ScoreboardData, channelId: string): 
     // Build table header
     // Use actual emoji Unicode characters since code blocks don't render emoji codes
     const separator = `┼─${'─'.repeat(nameWidth)}─┼─${'─'.repeat(scoreWidth)}─┼─${'─'.repeat(questionsWidth)}─┼`;
-    const headerRow = `│ ${padCenter('👤', nameWidth)} │ ${padCenter('💡', scoreWidth)} │ ${padCenter('❓', questionsWidth)} │`;
+    const headerRow = `│ ${padCenter('👤', nameWidth, 1)} │ ${padCenter('💡', scoreWidth, 1)} │ ${padCenter('❓', questionsWidth, 1)} │`;
 
     // Build table rows
     const tableRows = resolvedEntries
@@ -120,7 +124,7 @@ async function formatScoreboardBlocks(data: ScoreboardData, channelId: string): 
           displayName.length > nameWidth - 2
             ? displayName.substring(0, nameWidth - 5) + '...'
             : displayName;
-        return `│ ${truncatedName.padEnd(nameWidth)} │ ${score.toString().padStart(scoreWidth)} │ ${questions.toString().padStart(questionsWidth)}  │`;
+        return `│ ${truncatedName.padEnd(nameWidth)} │ ${score.toString().padStart(scoreWidth)} │ ${questions.toString().padStart(questionsWidth)} │`;
       })
       .join('\n');
 
