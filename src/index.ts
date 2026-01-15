@@ -635,57 +635,31 @@ app.event('reaction_added', async ({ event, client }: any) => {
   const reactedMessageTs = event.item.ts;
 
   try {
-    // Get the message that was reacted to using conversations.replies
-    // We need to find which thread contains this message
-    // Strategy: Get recent thread roots and search their replies
-    
-    let threadTs: string | null = null;
-    let reactedMessage: any = null;
-
-    // Get recent messages to find thread roots
-    const recentMessages = await client.conversations.history({
+    // Get the exact reacted message using conversations.history
+    const messageInfo = await client.conversations.history({
       channel: channelId,
-      limit: 50, // Check last 50 messages for thread roots
+      latest: reactedMessageTs,
+      oldest: reactedMessageTs,
+      inclusive: true,
+      limit: 1,
     });
 
-    if (recentMessages.messages) {
-      // Search through messages to find thread roots (messages without thread_ts)
-      for (const msg of recentMessages.messages) {
-        // This is a potential thread root (no thread_ts means it's a root or standalone)
-        if (msg.ts && !msg.thread_ts) {
-          try {
-            // Get all replies in this thread
-            const threadReplies = await client.conversations.replies({
-              channel: channelId,
-              ts: msg.ts,
-            });
-
-            if (threadReplies.messages) {
-              // Check if the reacted message is in this thread
-              const found = threadReplies.messages.find(
-                (m: any) => m.ts === reactedMessageTs
-              );
-              if (found) {
-                threadTs = msg.ts;
-                reactedMessage = found;
-                break;
-              }
-            }
-          } catch (error) {
-            // Continue searching other threads
-            continue;
-          }
-        }
-      }
-    }
-
-    // Must be in a thread
-    if (!threadTs || !reactedMessage) {
-      console.log('Reacted message not found in any thread');
+    if (!messageInfo.messages || messageInfo.messages.length === 0) {
+      console.log('Reacted message not found');
       return;
     }
 
+    const reactedMessage = messageInfo.messages[0];
+
+    // Must be in a thread
+    if (!reactedMessage.thread_ts) {
+      console.log('Reacted message thread ts is missing');
+      return;
+    }
+
+    const threadTs = reactedMessage.thread_ts;
     const answerText = (reactedMessage.text || '(no text)').trim();
+    const guessAuthorId = reactedMessage.user || event.item_user;
 
     // Find the round
     const roundInfo = await findRoundControlMessage(channelId, threadTs);
@@ -714,16 +688,14 @@ app.event('reaction_added', async ({ event, client }: any) => {
       console.log('Reactor is the OP');
     }
 
-    // Get the author of the reacted message
-    if (!reactedMessage.user) {
+    // Get the author of the reacted message (already set above)
+    if (!guessAuthorId) {
       console.log('Reacted message user is missing');
       return;
     } else {
       console.log('Reacted message user is present');
       console.log(reactedMessage);
     }
-
-    const guessAuthorId = event.item_user;
 
     // Don't allow solving bot messages
     const { botUserId } = await ensureBotIdentity();
