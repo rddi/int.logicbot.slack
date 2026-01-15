@@ -15,7 +15,8 @@ import {
   findInstructionMessage,
   findAndUpdateInstructionMessage,
   updateRootMessageButton,
-  updateRootMessageClosed
+  updateRootMessageClosed,
+  capitalizeFirst
 } from './helpers/rounds';
 import { 
   getOrCreateScoreboard, 
@@ -573,7 +574,7 @@ if (isAdmin(user_id)) {
       status: RoundStatus.OPEN,
       threadTs: threadTs,
       channelId: channel_id,
-      question: rawText, // Store plain question text
+      question: capitalizeFirst(rawText), // Store plain question text with capital first letter
     };
 
     await client.chat.postMessage({
@@ -647,7 +648,11 @@ app.event('reaction_added', async ({ event, client }: any) => {
       return;
     }
 
+    console.log('Message info:', messageInfo);
+
     const rootMessage = messageInfo.messages[0];
+
+    console.log('Root message:', rootMessage);
     
     // Must be in a thread
     if (!rootMessage.thread_ts) {
@@ -863,7 +868,7 @@ app.action('confirm_solve', async ({ action, ack, client }: any) => {
     const updatedState: RoundState = {
       ...roundInfo.state,
       status: RoundStatus.SOLVED,
-      answer: data.answerText,
+      answer: capitalizeFirst(data.answerText),
     };
 
     await client.chat.update({
@@ -1141,7 +1146,7 @@ app.action('confirm_private_solve', async ({ action, ack, client }: any) => {
     const updatedState: RoundState = {
       ...roundInfo.state,
       status: RoundStatus.SOLVED,
-      answer: data.answerText,
+      answer: capitalizeFirst(data.answerText),
     };
 
     await client.chat.update({
@@ -1489,7 +1494,7 @@ app.view('edit_question_modal', async ({ ack, view, client, body }: any) => {
     // Update round state with new question
     const updatedState: RoundState = {
       ...roundInfo.state,
-      question: newQuestion,
+      question: capitalizeFirst(newQuestion),
     };
 
     await client.chat.update({

@@ -309,24 +309,46 @@ export async function getOrCreateScoreboard(channelId: string): Promise<string> 
     if (pins.items) {
       const { botUserId } = await ensureBotIdentity();
 
-      // Find existing scoreboard
+      // Find existing scoreboard(s) - look for header block with "🏆 Scoreboard"
+      const existingScoreboards: Array<{ ts: string; item: any }> = [];
       for (const item of pins.items) {
         // Check if item is a message type and has message property
         if ('message' in item && item.message) {
           const message = item.message as any;
           if (message.user === botUserId) {
-            const text = message.text || '';
             const blocks = message.blocks || [];
-            // Check if it's our scoreboard (has "Scoreboard" header or contains scoreboard blocks)
-            if (
-              text.includes('Scoreboard') ||
-              (blocks.length > 0 && blocks[0]?.text?.text?.includes('Scoreboard'))
-            ) {
-              scoreboardMessageCache[channelId] = message.ts!;
-              return message.ts!;
+            // Check if it's our scoreboard by looking for the header block with "🏆 Scoreboard"
+            const hasScoreboardHeader = blocks.some(
+              (block: any) =>
+                block.type === 'header' &&
+                block.text?.text?.includes('Scoreboard')
+            );
+            if (hasScoreboardHeader) {
+              existingScoreboards.push({ ts: message.ts!, item });
             }
           }
         }
+      }
+
+      // If we found scoreboards, use the first one and unpin any duplicates
+      if (existingScoreboards.length > 0) {
+        const primaryScoreboard = existingScoreboards[0];
+        
+        // Unpin any duplicate scoreboards (keep only the first one)
+        for (let i = 1; i < existingScoreboards.length; i++) {
+          try {
+            await app.client.pins.remove({
+              channel: channelId,
+              timestamp: existingScoreboards[i].ts,
+            });
+            console.log(`Unpinned duplicate scoreboard: ${existingScoreboards[i].ts}`);
+          } catch (error) {
+            console.error(`Error unpinning duplicate scoreboard:`, error);
+          }
+        }
+
+        scoreboardMessageCache[channelId] = primaryScoreboard.ts;
+        return primaryScoreboard.ts;
       }
     }
 

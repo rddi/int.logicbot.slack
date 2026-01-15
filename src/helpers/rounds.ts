@@ -4,6 +4,12 @@ import { app, QUESTION_REGEX } from '../config';
 import { RoundStatus, RoundState } from '../types';
 import { ensureBotIdentity } from './slack';
 
+// Capitalize the first letter of a string
+export function capitalizeFirst(text: string): string {
+  if (!text || text.length === 0) return text;
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
 // Encode threadTs to make it non-human-readable
 export function encodeThreadTs(threadTs: string): string {
   return Buffer.from(threadTs).toString('base64');
