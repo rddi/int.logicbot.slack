@@ -635,24 +635,20 @@ app.event('reaction_added', async ({ event, client }: any) => {
   const reactedMessageTs = event.item.ts;
 
   try {
-    // Get the reacted message using conversations.history with timestamp range
-    const messageInfo = await client.conversations.history({
+    // Get the reacted message using conversations.replies
+    const threadReplies = await client.conversations.replies({
       channel: channelId,
-      latest: (parseFloat(reactedMessageTs) + 1).toString(),
-      oldest: (parseFloat(reactedMessageTs) - 1).toString(),
-      inclusive: true,
-      limit: 5,
+      ts: reactedMessageTs,
+      limit: 200,
     });
 
-    console.log('Message info:', messageInfo);
-
-    if (!messageInfo.messages || messageInfo.messages.length === 0) {
+    if (!threadReplies.messages || threadReplies.messages.length === 0) {
       console.log('Reacted message not found');
       return;
     }
 
     // Find the exact reacted message by matching timestamp
-    const reactedMessage = messageInfo.messages.find(
+    const reactedMessage = threadReplies.messages.find(
       (m: any) => m.ts === reactedMessageTs
     );
 
@@ -661,15 +657,15 @@ app.event('reaction_added', async ({ event, client }: any) => {
       return;
     }
 
-    // Must be in a thread
-    if (!reactedMessage.thread_ts) {
-      console.log('Reacted message thread ts is missing');
-      return;
-    }
-
-    const threadTs = reactedMessage.thread_ts;
+    // Determine the thread root
+    const threadTs = reactedMessage.thread_ts || reactedMessageTs;
     const answerText = (reactedMessage.text || '(no text)').trim();
     const guessAuthorId = reactedMessage.user || event.item_user;
+
+    if (!guessAuthorId) {
+      console.log('Reacted message user is missing');
+      return;
+    }
 
     // Find the round
     const roundInfo = await findRoundControlMessage(channelId, threadTs);
@@ -699,13 +695,8 @@ app.event('reaction_added', async ({ event, client }: any) => {
     }
 
     // Get the author of the reacted message (already set above)
-    if (!guessAuthorId) {
-      console.log('Reacted message user is missing');
-      return;
-    } else {
-      console.log('Reacted message user is present');
-      console.log(reactedMessage);
-    }
+    console.log('Reacted message user is present');
+    console.log(reactedMessage);
 
     // Don't allow solving bot messages
     const { botUserId } = await ensureBotIdentity();
