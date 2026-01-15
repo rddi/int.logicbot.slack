@@ -644,6 +644,8 @@ app.event('reaction_added', async ({ event, client }: any) => {
       limit: 5,
     });
 
+    console.log('Message info:', messageInfo);
+
     if (!messageInfo.messages || messageInfo.messages.length === 0) {
       console.log('Reacted message not found');
       return;
