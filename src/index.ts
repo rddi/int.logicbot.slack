@@ -635,13 +635,13 @@ app.event('reaction_added', async ({ event, client }: any) => {
   const reactedMessageTs = event.item.ts;
 
   try {
-    // Get the exact reacted message using conversations.history
+    // Get the reacted message using conversations.history with timestamp range
     const messageInfo = await client.conversations.history({
       channel: channelId,
-      latest: reactedMessageTs,
-      oldest: reactedMessageTs,
+      latest: (parseFloat(reactedMessageTs) + 1).toString(),
+      oldest: (parseFloat(reactedMessageTs) - 1).toString(),
       inclusive: true,
-      limit: 1,
+      limit: 5,
     });
 
     if (!messageInfo.messages || messageInfo.messages.length === 0) {
@@ -649,7 +649,15 @@ app.event('reaction_added', async ({ event, client }: any) => {
       return;
     }
 
-    const reactedMessage = messageInfo.messages[0];
+    // Find the exact reacted message by matching timestamp
+    const reactedMessage = messageInfo.messages.find(
+      (m: any) => m.ts === reactedMessageTs
+    );
+
+    if (!reactedMessage) {
+      console.log('Reacted message not found');
+      return;
+    }
 
     // Must be in a thread
     if (!reactedMessage.thread_ts) {
