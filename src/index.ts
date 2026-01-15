@@ -635,51 +635,53 @@ app.event('reaction_added', async ({ event, client }: any) => {
   const reactedMessageTs = event.item.ts;
 
   try {
-    // First, get the message to find if it's in a thread
-    const messageInfo = await client.conversations.history({
-      channel: channelId,
-      latest: reactedMessageTs,
-      limit: 1,
-      inclusive: true,
-    });
-
-    if (!messageInfo.messages || messageInfo.messages.length === 0) {
-      console.log('No messages found in history');
-      return;
-    }
-
-    console.log('Message info:', messageInfo);
-
-    const rootMessage = messageInfo.messages[0];
-
-    console.log('Root message:', rootMessage);
+    // Get the message that was reacted to using conversations.replies
+    // We need to find which thread contains this message
+    // Strategy: Get recent thread roots and search their replies
     
-    // Must be in a thread
-    if (!rootMessage.thread_ts) {
-      console.log('Reacted message thread ts is missing');
-      return;
-    }
+    let threadTs: string | null = null;
+    let reactedMessage: any = null;
 
-    const threadTs = rootMessage.thread_ts;
-
-    // Get all messages in the thread to find the specific one that was reacted to
-    const threadReplies = await client.conversations.replies({
+    // Get recent messages to find thread roots
+    const recentMessages = await client.conversations.history({
       channel: channelId,
-      ts: threadTs,
+      limit: 50, // Check last 50 messages for thread roots
     });
 
-    if (!threadReplies.messages) {
-      console.log('No thread replies found');
-      return;
+    if (recentMessages.messages) {
+      // Search through messages to find thread roots (messages without thread_ts)
+      for (const msg of recentMessages.messages) {
+        // This is a potential thread root (no thread_ts means it's a root or standalone)
+        if (msg.ts && !msg.thread_ts) {
+          try {
+            // Get all replies in this thread
+            const threadReplies = await client.conversations.replies({
+              channel: channelId,
+              ts: msg.ts,
+            });
+
+            if (threadReplies.messages) {
+              // Check if the reacted message is in this thread
+              const found = threadReplies.messages.find(
+                (m: any) => m.ts === reactedMessageTs
+              );
+              if (found) {
+                threadTs = msg.ts;
+                reactedMessage = found;
+                break;
+              }
+            }
+          } catch (error) {
+            // Continue searching other threads
+            continue;
+          }
+        }
+      }
     }
 
-    // Find the exact message that was reacted to
-    const reactedMessage = threadReplies.messages.find(
-      (msg: any) => msg.ts === reactedMessageTs
-    );
-
-    if (!reactedMessage) {
-      console.log('Reacted message not found in thread');
+    // Must be in a thread
+    if (!threadTs || !reactedMessage) {
+      console.log('Reacted message not found in any thread');
       return;
     }
 
