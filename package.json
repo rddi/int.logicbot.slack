@@ -19,7 +19,9 @@
   "license": "MIT",
   "dependencies": {
     "@slack/bolt": "^3.17.1",
-    "dotenv": "^16.4.5"
+    "dotenv": "^16.4.5",
+    "axios": "^1.7.4",
+    "path-to-regexp": "^8.1.0"
   },
   "devDependencies": {
     "@types/aws-lambda": "^8.10.130",
